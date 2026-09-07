@@ -44,6 +44,17 @@ STATUS_COLOR_MAP = {
     "Altro": "#94A3B8",
 }
 
+STATUS_CATEGORY_COLOR_GROUPS = {
+    "TO DO": "Da fare",
+    "IN PROGRESS": "In lavorazione",
+    "DONE": "Chiusura",
+}
+
+PEOPLE_STATUS_COLOR_MAP = {
+    "Aperti": "#7DD3FC",
+    "Completati": "#2563EB",
+}
+
 def normalize_issue_type(value):
     if value is None:
         return ""
@@ -65,6 +76,11 @@ def get_status_color_group(status):
     normalized_status = normalize_status(status)
 
     return STATUS_COLOR_GROUPS.get(normalized_status, "Altro")
+
+def get_status_category_color_group(status_category):
+    normalized_category = normalize_status(status_category)
+
+    return STATUS_CATEGORY_COLOR_GROUPS.get(normalized_category, "Altro")
 
 def filter_task_bug(df: pd.DataFrame):
     if df.empty or "IssueType" not in df.columns:
@@ -291,12 +307,18 @@ def render_status_category_panel(df: pd.DataFrame, key_suffix: str = "default"):
         .sort_values("Task/Bug", ascending=False)
     )
 
+    category_df["Raggruppamento"] = category_df["StatusCategory"].apply(
+        get_status_category_color_group
+    )
+
     fig = px.pie(
         category_df,
         names="StatusCategory",
         values="Task/Bug",
+        color="Raggruppamento",
         hole=0.45,
         title="Distribuzione Task/Bug per categoria Jira",
+        color_discrete_map=STATUS_COLOR_MAP,
     )
 
     st.plotly_chart(
@@ -306,86 +328,10 @@ def render_status_category_panel(df: pd.DataFrame, key_suffix: str = "default"):
     )
 
     st.dataframe(
-        category_df,
+        category_df[["StatusCategory", "Task/Bug"]],
         use_container_width=True,
         hide_index=True,
         key=f"status_category_table_{key_suffix}",
-    )
-
-def render_epic_panel(df: pd.DataFrame, key_suffix: str = "default"):
-    st.subheader("Avanzamento per Epic")
-
-    if df.empty:
-        st.info("Nessun dato disponibile.")
-        return
-
-    task_bug_df = filter_task_bug(df)
-
-    if task_bug_df.empty:
-        st.info("Nessun Task o Bug disponibile per i filtri selezionati.")
-        return
-
-    epic_df = task_bug_df.copy()
-
-    epic_df["Epic"] = epic_df["EpicName"]
-
-    epic_df.loc[
-        epic_df["Epic"].fillna("").str.strip() == "",
-        "Epic",
-    ] = epic_df["EpicKey"]
-
-    epic_df.loc[
-        epic_df["Epic"].fillna("").str.strip() == "",
-        "Epic",
-    ] = "Senza Epic"
-
-    grouped = (
-        epic_df
-        .groupby("Epic", dropna=False)
-        .agg(
-            TaskBug=("Issue", "count"),
-            Completati=("Done", "sum"),
-        )
-        .reset_index()
-    )
-
-    grouped["Aperti"] = grouped["TaskBug"] - grouped["Completati"]
-
-    grouped["Avanzamento %"] = (
-        grouped["Completati"] / grouped["TaskBug"] * 100
-    ).round(1)
-
-    grouped = grouped.sort_values("TaskBug", ascending=False)
-
-    fig = px.bar(
-        grouped.head(20),
-        x="Epic",
-        y=["Aperti", "Completati"],
-        title="Task/Bug aperti e completati per Epic",
-        barmode="stack",
-        color_discrete_map={
-            "Aperti": "#2563EB",
-            "Completati": "#16A34A",
-        },
-    )
-
-    fig.update_layout(
-        xaxis_title="Epic",
-        yaxis_title="Numero Task/Bug",
-        legend_title="",
-    )
-
-    st.plotly_chart(
-        fig,
-        use_container_width=True,
-        key=f"epic_panel_chart_{key_suffix}",
-    )
-
-    st.dataframe(
-        grouped,
-        use_container_width=True,
-        hide_index=True,
-        key=f"epic_panel_table_{key_suffix}",
     )
 
 def render_assignee_panel(df: pd.DataFrame, key_suffix: str = "default"):
@@ -433,10 +379,7 @@ def render_assignee_panel(df: pd.DataFrame, key_suffix: str = "default"):
         y=["Aperti", "Completati"],
         title="Task/Bug per assegnatario",
         barmode="stack",
-        color_discrete_map={
-            "Aperti": "#2563EB",
-            "Completati": "#16A34A",
-        },
+        color_discrete_map=PEOPLE_STATUS_COLOR_MAP,
     )
 
     fig.update_layout(
@@ -459,7 +402,7 @@ def render_assignee_panel(df: pd.DataFrame, key_suffix: str = "default"):
     )
 
 def render_priority_panel(df: pd.DataFrame, key_suffix: str = "default"):
-    st.subheader("Task/Bug per priorità")
+    st.subheader("Task/Bug per priorità cliente")
 
     if df.empty:
         st.info("Nessun dato disponibile.")
@@ -476,7 +419,7 @@ def render_priority_panel(df: pd.DataFrame, key_suffix: str = "default"):
     priority_df["Priority"] = (
         priority_df["Priority"]
         .fillna("")
-        .replace("", "Nessuna priorità")
+        .replace("", "Nessuna priorità cliente")
     )
 
     grouped = (
@@ -492,12 +435,12 @@ def render_priority_panel(df: pd.DataFrame, key_suffix: str = "default"):
         x="Priority",
         y="Task/Bug",
         text="Task/Bug",
-        title="Distribuzione Task/Bug per priorità",
+        title="Distribuzione Task/Bug per priorità cliente",
         color_discrete_sequence=["#2563EB"],
     )
 
     fig.update_layout(
-        xaxis_title="Priorità",
+        xaxis_title="Priorità cliente",
         yaxis_title="Numero Task/Bug",
     )
 
@@ -510,7 +453,7 @@ def render_priority_panel(df: pd.DataFrame, key_suffix: str = "default"):
     )
 
     st.dataframe(
-        grouped,
+        grouped.rename(columns={"Priority": "Priorità cliente"}),
         use_container_width=True,
         hide_index=True,
         key=f"priority_panel_table_{key_suffix}",
@@ -558,8 +501,17 @@ def render_age_panel(df: pd.DataFrame, key_suffix: str = "default"):
         if column in open_df.columns
     ]
 
+    display_df = open_df[existing_columns].copy()
+
+    if "Priority" in display_df.columns:
+        display_df = display_df.rename(
+            columns={
+                "Priority": "Priorità cliente",
+            }
+        )
+
     st.dataframe(
-        open_df[existing_columns].head(30),
+        display_df,
         use_container_width=True,
         hide_index=True,
         key=f"age_panel_table_{key_suffix}",
