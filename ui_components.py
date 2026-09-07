@@ -27,32 +27,48 @@ STATUS_ORDER_MAP = {
 
 STATUS_COLOR_GROUPS = {
     "DA FARE": "Da fare",
-    "ANALISI": "In lavorazione",
-    "IN CORSO": "In lavorazione",
-    "ON HOLD TEMP": "In lavorazione",
-    "IN REVISIONE/TEST": "In lavorazione",
-    "BLOCCATO": "In lavorazione",
-    "ANNULLATO": "Chiusi",
-    "TICKET FIL NON CHIUSO": "Chiusi",
-    "VERBALE CHIUSO": "Chiusi",
+    "ANALISI": "In corso",
+    "IN CORSO": "In corso",
+    "ON HOLD TEMP": "In corso",
+    "IN REVISIONE/TEST": "In corso",
+    "BLOCCATO": "In corso",
+    "ANNULLATO": "Completato",
+    "TICKET FIL NON CHIUSO": "Completato",
+    "VERBALE CHIUSO": "Completato",
+    "FATTO": "Completato",
+    "DONE": "Completato",
+    "CHIUSO": "Completato",
 }
 
 STATUS_COLOR_MAP = {
     "Da fare": "#7DD3FC",
-    "In lavorazione": "#2563EB",
-    "Chiusi": "#97f7aa",
+    "In corso": "#2563EB",
+    "Completato": "#16A34A",
     "Altro": "#94A3B8",
-}
-
-STATUS_CATEGORY_COLOR_GROUPS = {
-    "TO DO": "Da fare",
-    "IN PROGRESS": "In lavorazione",
-    "DONE": "Chiusi",
 }
 
 PEOPLE_STATUS_COLOR_MAP = {
     "Aperti": "#7DD3FC",
-    "Completati": "#97f7aa",
+    "Completati": "#2563EB",
+}
+
+PRIORITY_ORDER = [
+    "Bloccante",
+    "Critica",
+    "Alta",
+    "Media",
+    "Bassa",
+    "Nessuna priorità cliente",
+]
+
+PRIORITY_COLOR_MAP = {
+    "Bloccante": "#7F1D1D",
+    "Critica": "#DC2626",
+    "Alta": "#F97316",
+    "Media": "#FACC15",
+    "Bassa": "#22C55E",
+    "Nessuna priorità cliente": "#94A3B8",
+    "Altro": "#64748B",
 }
 
 def normalize_issue_type(value):
@@ -67,6 +83,12 @@ def normalize_status(value):
 
     return str(value).strip().upper()
 
+def normalize_priority(value):
+    if value is None:
+        return ""
+
+    return str(value).strip()
+
 def get_status_sort_order(status):
     normalized_status = normalize_status(status)
 
@@ -77,10 +99,23 @@ def get_status_color_group(status):
 
     return STATUS_COLOR_GROUPS.get(normalized_status, "Altro")
 
-def get_status_category_color_group(status_category):
-    normalized_category = normalize_status(status_category)
+def get_priority_sort_order(priority):
+    normalized_priority = normalize_priority(priority)
 
-    return STATUS_CATEGORY_COLOR_GROUPS.get(normalized_category, "Altro")
+    for index, priority_value in enumerate(PRIORITY_ORDER):
+        if normalized_priority.lower() == priority_value.lower():
+            return index
+
+    return 999
+
+def get_priority_color_key(priority):
+    normalized_priority = normalize_priority(priority)
+
+    for priority_value in PRIORITY_COLOR_MAP.keys():
+        if normalized_priority.lower() == priority_value.lower():
+            return priority_value
+
+    return "Altro"
 
 def filter_task_bug(df: pd.DataFrame):
     if df.empty or "IssueType" not in df.columns:
@@ -243,7 +278,7 @@ def render_status_panel(df: pd.DataFrame, key_suffix: str = "default"):
     )
 
     chart_df = status_df.copy()
-    chart_df["Raggruppamento"] = chart_df["Stato"].apply(get_status_color_group)
+    chart_df["Categoria"] = chart_df["Stato"].apply(get_status_color_group)
 
     ordered_statuses = status_df["Stato"].astype(str).tolist()
 
@@ -251,7 +286,7 @@ def render_status_panel(df: pd.DataFrame, key_suffix: str = "default"):
         chart_df,
         x="Stato",
         y="Task/Bug",
-        color="Raggruppamento",
+        color="Categoria",
         text="Task/Bug",
         title="Distribuzione Task/Bug per stato",
         color_discrete_map=STATUS_COLOR_MAP,
@@ -287,7 +322,7 @@ def render_status_panel(df: pd.DataFrame, key_suffix: str = "default"):
     )
 
 def render_status_category_panel(df: pd.DataFrame, key_suffix: str = "default"):
-    st.subheader("Categorie stato Jira")
+    st.subheader("Distribuzione Task/Bug per categoria")
 
     if df.empty:
         st.info("Nessun dato disponibile.")
@@ -299,26 +334,50 @@ def render_status_category_panel(df: pd.DataFrame, key_suffix: str = "default"):
         st.info("Nessun Task o Bug disponibile per i filtri selezionati.")
         return
 
-    category_df = (
-        task_bug_df
-        .groupby("StatusCategory", dropna=False)
+    category_df = task_bug_df.copy()
+    category_df["Categoria"] = category_df["Stato"].apply(get_status_color_group)
+
+    grouped = (
+        category_df
+        .groupby("Categoria", dropna=False)
         .size()
         .reset_index(name="Task/Bug")
-        .sort_values("Task/Bug", ascending=False)
     )
 
-    category_df["Raggruppamento"] = category_df["StatusCategory"].apply(
-        get_status_category_color_group
+    grouped["__order"] = grouped["Categoria"].map(
+        {
+            "Da fare": 0,
+            "In corso": 1,
+            "Completato": 2,
+            "Altro": 3,
+        }
+    ).fillna(999)
+
+    grouped = (
+        grouped
+        .sort_values(["__order", "Categoria"], ascending=[True, True])
+        .drop(columns=["__order"])
+        .reset_index(drop=True)
     )
 
     fig = px.pie(
-        category_df,
-        names="StatusCategory",
+        grouped,
+        names="Categoria",
         values="Task/Bug",
-        color="Raggruppamento",
+        color="Categoria",
         hole=0.45,
-        title="Distribuzione Task/Bug per categoria Jira",
+        title="Distribuzione Task/Bug per categoria",
         color_discrete_map=STATUS_COLOR_MAP,
+    )
+
+    fig.update_traces(
+        textinfo="label+percent+value",
+        marker=dict(
+            line=dict(
+                color="#ffffff",
+                width=2,
+            )
+        ),
     )
 
     st.plotly_chart(
@@ -328,7 +387,7 @@ def render_status_category_panel(df: pd.DataFrame, key_suffix: str = "default"):
     )
 
     st.dataframe(
-        category_df[["StatusCategory", "Task/Bug"]],
+        grouped,
         use_container_width=True,
         hide_index=True,
         key=f"status_category_table_{key_suffix}",
@@ -416,7 +475,7 @@ def render_priority_panel(df: pd.DataFrame, key_suffix: str = "default"):
 
     priority_df = task_bug_df.copy()
 
-    priority_df["Priority"] = (
+    priority_df["Priorità cliente"] = (
         priority_df["Priority"]
         .fillna("")
         .replace("", "Nessuna priorità cliente")
@@ -424,27 +483,52 @@ def render_priority_panel(df: pd.DataFrame, key_suffix: str = "default"):
 
     grouped = (
         priority_df
-        .groupby("Priority", dropna=False)
+        .groupby("Priorità cliente", dropna=False)
         .size()
         .reset_index(name="Task/Bug")
-        .sort_values("Task/Bug", ascending=False)
     )
+
+    grouped["__order"] = grouped["Priorità cliente"].apply(get_priority_sort_order)
+    grouped["__color_key"] = grouped["Priorità cliente"].apply(get_priority_color_key)
+
+    grouped = (
+        grouped
+        .sort_values(
+            by=["__order", "Task/Bug", "Priorità cliente"],
+            ascending=[True, False, True],
+            kind="mergesort",
+        )
+        .reset_index(drop=True)
+    )
+
+    ordered_priorities = grouped["Priorità cliente"].astype(str).tolist()
 
     fig = px.bar(
         grouped,
-        x="Priority",
+        x="Priorità cliente",
         y="Task/Bug",
+        color="__color_key",
         text="Task/Bug",
         title="Distribuzione Task/Bug per priorità cliente",
-        color_discrete_sequence=["#2563EB"],
+        color_discrete_map=PRIORITY_COLOR_MAP,
     )
 
     fig.update_layout(
         xaxis_title="Priorità cliente",
         yaxis_title="Numero Task/Bug",
+        legend_title="Priorità",
+        showlegend=False,
     )
 
-    fig.update_traces(textposition="outside")
+    fig.update_xaxes(
+        categoryorder="array",
+        categoryarray=ordered_priorities,
+    )
+
+    fig.update_traces(
+        textposition="outside",
+        marker_line_width=0,
+    )
 
     st.plotly_chart(
         fig,
@@ -452,70 +536,11 @@ def render_priority_panel(df: pd.DataFrame, key_suffix: str = "default"):
         key=f"priority_panel_chart_{key_suffix}",
     )
 
+    table_df = grouped.drop(columns=["__order", "__color_key"])
+
     st.dataframe(
-        grouped.rename(columns={"Priority": "Priorità cliente"}),
+        table_df,
         use_container_width=True,
         hide_index=True,
         key=f"priority_panel_table_{key_suffix}",
-    )
-
-def render_age_panel(df: pd.DataFrame, key_suffix: str = "default"):
-    st.subheader("Task/Bug aperti da più tempo")
-
-    if df.empty:
-        st.info("Nessun dato disponibile.")
-        return
-
-    task_bug_df = filter_task_bug(df)
-
-    if task_bug_df.empty:
-        st.info("Nessun Task o Bug disponibile per i filtri selezionati.")
-        return
-
-    open_df = task_bug_df[task_bug_df["Done"] == False].copy()
-
-    if open_df.empty:
-        st.success("Non ci sono Task/Bug aperti nel perimetro selezionato.")
-        return
-
-    open_df = open_df.sort_values("DaysOpen", ascending=False)
-
-    columns = [
-        "Issue",
-        "Summary",
-        "IssueType",
-        "Stato",
-        "Assignee",
-        "Priority",
-        "EpicName",
-        "Created",
-        "Updated",
-        "DaysOpen",
-        "DaysSinceUpdate",
-        "Url",
-    ]
-
-    existing_columns = [
-        column
-        for column in columns
-        if column in open_df.columns
-    ]
-
-    display_df = open_df[existing_columns].copy()
-
-    if "Priority" in display_df.columns:
-        display_df = display_df.rename(
-            columns={
-                "Priority": "Priorità cliente",
-            }
-        )
-
-    st.dataframe(
-        display_df,
-        use_container_width=True,
-        hide_index=True,
-        key=f"age_panel_table_{key_suffix}",
-        column_config={
-            "Url": st.column_config.LinkColumn("Jira"),
-        },
     )
