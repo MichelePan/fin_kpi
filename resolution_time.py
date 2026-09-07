@@ -1,9 +1,15 @@
 import io
+import re
+import unicodedata
 import requests
 import pandas as pd
 import streamlit as st
 
 from requests.auth import HTTPBasicAuth
+
+# ======================
+# CONFIG STATI
+# ======================
 
 START_FROM_STATUSES = {
     "DA FARE",
@@ -35,6 +41,15 @@ CLOSING_STATUSES = {
     "ANNULLATA",
 }
 
+TASK_BUG_TYPES = {
+    "TASK",
+    "BUG",
+}
+
+# ======================
+# NORMALIZZAZIONE
+# ======================
+
 def normalize_domain(domain: str) -> str:
     domain = str(domain).strip()
     domain = domain.replace("https://", "")
@@ -42,28 +57,53 @@ def normalize_domain(domain: str) -> str:
     domain = domain.strip("/")
     return domain
 
-def normalize_status(value) -> str:
+def normalize_text(value) -> str:
     if value is None:
         return ""
 
-    return str(value).strip().upper()
+    text = str(value).strip()
+
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(
+        character
+        for character in text
+        if not unicodedata.combining(character)
+    )
+
+    text = text.upper()
+    text = re.sub(r"\s+", " ", text)
+
+    return text.strip()
 
 def normalize_issue_type(value) -> str:
-    if value is None:
-        return ""
+    return normalize_text(value)
 
-    return str(value).strip().lower()
+def normalize_status(value) -> str:
+    return normalize_text(value)
 
 def is_task_or_bug(issue_type) -> bool:
-    return normalize_issue_type(issue_type) in {"task", "bug"}
+    return normalize_issue_type(issue_type) in TASK_BUG_TYPES
+
+# ======================
+# JIRA API
+# ======================
 
 def parse_jira_timestamp(value):
     if not value:
         return pd.NaT
 
-    return pd.to_datetime(value, utc=True, errors="coerce")
+    return pd.to_datetime(
+        value,
+        utc=True,
+        errors="coerce",
+    )
 
-def get_issue_changelog(domain, email, token, issue_key):
+def get_issue_changelog(
+    domain: str,
+    email: str,
+    token: str,
+    issue_key: str,
+) -> list[dict]:
     domain = normalize_domain(domain)
     base_url = f"https://{domain}/rest/api/3"
 
@@ -99,8 +139,9 @@ def get_issue_changelog(domain, email, token, issue_key):
                 f"{response.status_code} - {response.text}"
             )
 
-        data = response.json()
-        histories = data.get("values", [])
+        data = response.json() or {}
+
+        histories = data.get("values", []) or []
 
         all_histories.extend(histories)
 
@@ -114,6 +155,10 @@ def get_issue_changelog(domain, email, token, issue_key):
             break
 
     return all_histories
+
+# ======================
+# CHANGELOG PARSING
+# ======================
 
 def extract_status_events(changelog: list[dict]) -> list[dict]:
     events = []
@@ -132,70 +177,50 @@ def extract_status_events(changelog: list[dict]) -> list[dict]:
             if field_name != "status":
                 continue
 
+            from_status = item.get("fromString", "") or ""
+            to_status = item.get("toString", "") or ""
+
             events.append(
                 {
                     "Timestamp": created,
-                    "FromStatus": item.get("fromString", "") or "",
-                    "ToStatus": item.get("toString", "") or "",
+                    "FromStatus": from_status,
+                    "ToStatus": to_status,
+                    "FromStatusNormalized": normalize_status(from_status),
+                    "ToStatusNormalized": normalize_status(to_status),
                 }
             )
 
-    events = sorted(events, key=lambda item: item["Timestamp"])
+    events = sorted(
+        events,
+        key=lambda item: item["Timestamp"],
+    )
 
     return events
 
-def compute_resolution_time_for_issue(issue_info: dict, changelog: list[dict]) -> dict:
-    issue_key = issue_info.get("Issue", "")
-
-    result = {
-        "Issue": issue_key,
-        "Summary": issue_info.get("Summary", ""),
-        "IssueType": issue_info.get("IssueType", ""),
-        "Stato corrente": issue_info.get("Stato", ""),
-        "Assignee": issue_info.get("Assignee", ""),
-        "EpicKey": issue_info.get("EpicKey", ""),
-        "EpicName": issue_info.get("EpicName", ""),
-        "Data inizio lavorazione": pd.NaT,
-        "Data fine lavorazione": pd.NaT,
-        "Tempo lordo giorni": None,
-        "Tempo lordo ore": None,
-        "Tempo escluso giorni": None,
-        "Tempo escluso ore": None,
-        "Tempo netto giorni": None,
-        "Tempo netto ore": None,
-        "Esito": "",
-        "Url": issue_info.get("Url", ""),
-    }
-
-    if not is_task_or_bug(issue_info.get("IssueType", "")):
-        result["Esito"] = "Escluso: non Task/Bug"
-        return result
-
-    events = extract_status_events(changelog)
-
-    if not events:
-        result["Esito"] = "Changelog stato non disponibile"
-        return result
-
-    start_event = None
-
+def find_start_event(events: list[dict]):
     for event in events:
-        from_status = normalize_status(event.get("FromStatus"))
-        to_status = normalize_status(event.get("ToStatus"))
+        from_status = event.get("FromStatusNormalized", "")
+        to_status = event.get("ToStatusNormalized", "")
 
-        if from_status in START_FROM_STATUSES and to_status in START_TO_STATUSES:
-            start_event = event
-            break
+        if (
+            from_status in START_FROM_STATUSES
+            and to_status in START_TO_STATUSES
+        ):
+            return event
 
-    if start_event is None:
-        result["Esito"] = "Transizione iniziale non trovata"
-        return result
+    return None
 
+def find_end_and_excluded_time(
+    events: list[dict],
+    start_event: dict,
+):
     start_ts = start_event["Timestamp"]
-    current_status = start_event.get("ToStatus", "")
+
+    current_status = start_event.get("ToStatusNormalized", "")
     previous_ts = start_ts
 
     end_ts = pd.NaT
+    end_status = ""
     excluded_seconds = 0.0
 
     events_after_start = [
@@ -210,32 +235,94 @@ def compute_resolution_time_for_issue(issue_info: dict, changelog: list[dict]) -
         if event_ts < previous_ts:
             continue
 
-        current_status_normalized = normalize_status(current_status)
-
-        if current_status_normalized in EXCLUDED_STATUSES:
+        if current_status in EXCLUDED_STATUSES:
             interval_seconds = (event_ts - previous_ts).total_seconds()
             excluded_seconds += max(interval_seconds, 0)
 
-        to_status = event.get("ToStatus", "")
-        to_status_normalized = normalize_status(to_status)
+        to_status = event.get("ToStatusNormalized", "")
 
-        if to_status_normalized in CLOSING_STATUSES:
+        if to_status in CLOSING_STATUSES:
             end_ts = event_ts
+            end_status = event.get("ToStatus", "")
             break
 
         current_status = to_status
         previous_ts = event_ts
 
+    return end_ts, end_status, excluded_seconds
+
+# ======================
+# CALCOLO TEMPI
+# ======================
+
+def compute_resolution_time_for_issue(
+    issue_info: dict,
+    changelog: list[dict],
+) -> dict:
+    issue_key = issue_info.get("Issue", "")
+
+    result = {
+        "Issue": issue_key,
+        "Summary": issue_info.get("Summary", ""),
+        "IssueType": issue_info.get("IssueType", ""),
+        "Stato corrente": issue_info.get("Stato", ""),
+        "Assignee": issue_info.get("Assignee", ""),
+        "EpicKey": issue_info.get("EpicKey", ""),
+        "EpicName": issue_info.get("EpicName", ""),
+        "Data inizio lavorazione": pd.NaT,
+        "Data fine lavorazione": pd.NaT,
+        "Stato fine": "",
+        "Tempo lordo giorni": None,
+        "Tempo lordo ore": None,
+        "Tempo escluso giorni": None,
+        "Tempo escluso ore": None,
+        "Tempo netto giorni": None,
+        "Tempo netto ore": None,
+        "Esito": "",
+        "Url": issue_info.get("Url", ""),
+    }
+
+    if not is_task_or_bug(issue_info.get("IssueType", "")):
+        result["Esito"] = "Escluso: issue type non Task/Bug"
+        return result
+
+    events = extract_status_events(changelog)
+
+    if not events:
+        result["Esito"] = "Changelog stato non disponibile"
+        return result
+
+    start_event = find_start_event(events)
+
+    if start_event is None:
+        result["Esito"] = "Transizione Da fare → ANALISI PRELIMINARE non trovata"
+        return result
+
+    start_ts = start_event["Timestamp"]
+
+    end_ts, end_status, excluded_seconds = find_end_and_excluded_time(
+        events=events,
+        start_event=start_event,
+    )
+
     result["Data inizio lavorazione"] = start_ts
 
     if pd.isna(end_ts):
-        result["Esito"] = "Transizione di chiusura non trovata"
+        result["Esito"] = "Transizione verso stato di chiusura non trovata"
         return result
 
     result["Data fine lavorazione"] = end_ts
+    result["Stato fine"] = end_status
 
-    gross_seconds = max((end_ts - start_ts).total_seconds(), 0)
-    net_seconds = max(gross_seconds - excluded_seconds, 0)
+    gross_seconds = max(
+        (end_ts - start_ts).total_seconds(),
+        0,
+    )
+
+    net_seconds = max(
+        gross_seconds - excluded_seconds,
+        0,
+    )
 
     result["Tempo lordo ore"] = round(gross_seconds / 3600, 2)
     result["Tempo lordo giorni"] = round(gross_seconds / 86400, 2)
@@ -266,6 +353,7 @@ def build_resolution_time_dataframe(
         "EpicName",
         "Data inizio lavorazione",
         "Data fine lavorazione",
+        "Stato fine",
         "Tempo lordo giorni",
         "Tempo lordo ore",
         "Tempo escluso giorni",
@@ -279,20 +367,13 @@ def build_resolution_time_dataframe(
     if issue_df.empty:
         return pd.DataFrame(columns=columns)
 
-    task_bug_df = issue_df[
-        issue_df["IssueType"].apply(is_task_or_bug)
-    ].copy()
-
-    if task_bug_df.empty:
-        return pd.DataFrame(columns=columns)
-
     rows = []
+
+    issue_records = issue_df.to_dict(orient="records")
+    total_issues = len(issue_records)
 
     progress_text = st.empty()
     progress_bar = st.progress(0)
-
-    issue_records = task_bug_df.to_dict(orient="records")
-    total_issues = len(issue_records)
 
     for index, issue_info in enumerate(issue_records, start=1):
         issue_key = issue_info.get("Issue", "")
@@ -301,6 +382,15 @@ def build_resolution_time_dataframe(
             f"Calcolo tempi {index}/{total_issues}: {issue_key}"
         )
 
+        if not is_task_or_bug(issue_info.get("IssueType", "")):
+            row = compute_resolution_time_for_issue(
+                issue_info=issue_info,
+                changelog=[],
+            )
+            rows.append(row)
+            progress_bar.progress(index / total_issues)
+            continue
+
         try:
             changelog = get_issue_changelog(
                 jira_domain,
@@ -308,8 +398,31 @@ def build_resolution_time_dataframe(
                 jira_api_token,
                 issue_key,
             )
-        except Exception:
-            changelog = []
+        except Exception as exc:
+            row = {
+                "Issue": issue_key,
+                "Summary": issue_info.get("Summary", ""),
+                "IssueType": issue_info.get("IssueType", ""),
+                "Stato corrente": issue_info.get("Stato", ""),
+                "Assignee": issue_info.get("Assignee", ""),
+                "EpicKey": issue_info.get("EpicKey", ""),
+                "EpicName": issue_info.get("EpicName", ""),
+                "Data inizio lavorazione": pd.NaT,
+                "Data fine lavorazione": pd.NaT,
+                "Stato fine": "",
+                "Tempo lordo giorni": None,
+                "Tempo lordo ore": None,
+                "Tempo escluso giorni": None,
+                "Tempo escluso ore": None,
+                "Tempo netto giorni": None,
+                "Tempo netto ore": None,
+                "Esito": f"Errore recupero changelog: {str(exc)[:180]}",
+                "Url": issue_info.get("Url", ""),
+            }
+
+            rows.append(row)
+            progress_bar.progress(index / total_issues)
+            continue
 
         row = compute_resolution_time_for_issue(
             issue_info=issue_info,
@@ -355,6 +468,10 @@ def build_resolution_time_dataframe(
 
     return result_df
 
+# ======================
+# EXPORT
+# ======================
+
 def create_resolution_time_excel_export(resolution_df: pd.DataFrame):
     output = io.BytesIO()
 
@@ -387,13 +504,18 @@ def create_resolution_time_excel_export(resolution_df: pd.DataFrame):
         worksheet.set_column("C:E", 18)
         worksheet.set_column("F:G", 26)
         worksheet.set_column("H:I", 22, datetime_format)
-        worksheet.set_column("J:O", 18, number_format)
-        worksheet.set_column("P:P", 34)
-        worksheet.set_column("Q:Q", 60)
+        worksheet.set_column("J:J", 18)
+        worksheet.set_column("K:P", 18, number_format)
+        worksheet.set_column("Q:Q", 46)
+        worksheet.set_column("R:R", 60)
 
     output.seek(0)
 
     return output
+
+# ======================
+# UI
+# ======================
 
 def render_resolution_time_section(
     issue_df: pd.DataFrame,
@@ -414,17 +536,9 @@ def render_resolution_time_section(
         st.info("Nessuna issue disponibile per i filtri selezionati.")
         return
 
-    task_bug_df = issue_df[
-        issue_df["IssueType"].apply(is_task_or_bug)
-    ].copy()
-
-    if task_bug_df.empty:
-        st.info("Nessun Task/Bug disponibile per il calcolo dei tempi.")
-        return
-
     issue_signature = "|".join(
         sorted(
-            task_bug_df["Issue"]
+            issue_df["Issue"]
             .dropna()
             .drop_duplicates()
             .astype(str)
@@ -451,7 +565,7 @@ def render_resolution_time_section(
         st.session_state["resolution_time_loaded"] = True
 
         resolution_df = build_resolution_time_dataframe(
-            issue_df=task_bug_df,
+            issue_df=issue_df,
             jira_domain=jira_domain,
             jira_email=jira_email,
             jira_api_token=jira_api_token,
@@ -476,30 +590,44 @@ def render_resolution_time_section(
         resolution_df["Esito"] == "Calcolato"
     ].copy()
 
-    total_tickets = len(resolution_df)
+    total_rows = len(resolution_df)
+    task_bug_rows = len(
+        resolution_df[
+            resolution_df["IssueType"].apply(is_task_or_bug)
+        ]
+    )
     calculated_tickets = len(calculated_df)
-    not_calculated_tickets = total_tickets - calculated_tickets
+    not_calculated_tickets = task_bug_rows - calculated_tickets
 
     average_days = 0
     average_hours = 0
     median_days = 0
 
     if not calculated_df.empty:
-        average_days = round(calculated_df["Tempo netto giorni"].mean(), 2)
-        average_hours = round(calculated_df["Tempo netto ore"].mean(), 2)
-        median_days = round(calculated_df["Tempo netto giorni"].median(), 2)
+        average_days = round(
+            calculated_df["Tempo netto giorni"].mean(),
+            2,
+        )
+        average_hours = round(
+            calculated_df["Tempo netto ore"].mean(),
+            2,
+        )
+        median_days = round(
+            calculated_df["Tempo netto giorni"].median(),
+            2,
+        )
 
     c1, c2, c3, c4 = st.columns(4)
 
     c1.metric("Tempo medio risoluzione", f"{average_days} giorni")
     c2.metric("Tempo medio risoluzione ore", f"{average_hours} ore")
     c3.metric("Ticket calcolati", calculated_tickets)
-    c4.metric("Ticket non calcolati", not_calculated_tickets)
+    c4.metric("Ticket non calcolati", max(not_calculated_tickets, 0))
 
     c5, c6, c7, c8 = st.columns(4)
 
     c5.metric("Mediana risoluzione", f"{median_days} giorni")
-    c6.metric("Ticket analizzati", total_tickets)
+    c6.metric("Righe analizzate", total_rows)
 
     if not calculated_df.empty:
         c7.metric(
@@ -514,6 +642,25 @@ def render_resolution_time_section(
     else:
         c7.metric("Tempo massimo netto", "0 giorni")
         c8.metric("Tempo escluso medio", "0 giorni")
+
+    st.divider()
+
+    st.subheader("Esiti calcolo")
+
+    esiti_df = (
+        resolution_df
+        .groupby("Esito", dropna=False)
+        .size()
+        .reset_index(name="Ticket")
+        .sort_values("Ticket", ascending=False)
+    )
+
+    st.dataframe(
+        esiti_df,
+        use_container_width=True,
+        hide_index=True,
+        key="resolution_time_esiti_table",
+    )
 
     st.divider()
 
@@ -543,6 +690,7 @@ def render_resolution_time_section(
         "EpicName",
         "Data inizio lavorazione",
         "Data fine lavorazione",
+        "Stato fine",
         "Tempo lordo giorni",
         "Tempo escluso giorni",
         "Tempo netto giorni",
