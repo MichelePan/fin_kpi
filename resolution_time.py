@@ -29,11 +29,11 @@ EXECUTION_STATUSES = {
     "ANALISI PRELIMINARE",
     "IN CORSO",
     "IN REVISIONE/TEST",
-    "ON HOLD TEMP",
 }
 
 EXCLUDED_STATUSES = {
-    "BLOCCATO"
+    "ON HOLD TEMP",
+    "BLOCCATO",
 }
 
 CLOSING_STATUSES = {
@@ -132,6 +132,24 @@ def build_epic_label(issue_info: dict) -> str:
         return epic_key
 
     return "Senza Epic"
+
+def ensure_epic_column(df: pd.DataFrame) -> pd.DataFrame:
+    updated_df = df.copy()
+
+    if "Epic" in updated_df.columns:
+        updated_df["Epic"] = (
+            updated_df["Epic"]
+            .fillna("")
+            .replace("", "Senza Epic")
+        )
+        return updated_df
+
+    updated_df["Epic"] = updated_df.apply(
+        lambda row: build_epic_label(row.to_dict()),
+        axis=1,
+    )
+
+    return updated_df
 
 # ======================
 # JIRA API
@@ -622,6 +640,8 @@ def build_resolution_time_dataframe(
     if result_df.empty:
         return result_df
 
+    result_df = ensure_epic_column(result_df)
+
     result_df["Data inizio lavorazione"] = pd.to_datetime(
         result_df["Data inizio lavorazione"],
         errors="coerce",
@@ -667,8 +687,10 @@ def build_epic_resolution_summary(calculated_df: pd.DataFrame) -> pd.DataFrame:
     if calculated_df.empty:
         return pd.DataFrame(columns=columns)
 
+    safe_df = ensure_epic_column(calculated_df)
+
     summary_df = (
-        calculated_df
+        safe_df
         .groupby("Epic", dropna=False)
         .agg(
             **{
@@ -724,6 +746,7 @@ def make_datetime_excel_safe(value):
 
 def prepare_resolution_dataframe_for_excel(resolution_df: pd.DataFrame) -> pd.DataFrame:
     export_df = resolution_df.copy()
+    export_df = ensure_epic_column(export_df)
 
     datetime_columns = [
         "Data inizio lavorazione",
@@ -815,11 +838,11 @@ def render_resolution_time_section(
     st.subheader("Tempi di risoluzione")
 
     st.caption(
-        "Il tempo viene calcolato sui ticket completati"
+        "Il tempo viene calcolato sui ticket completati, escludendo le Epic. "
         "Il calcolo parte dalla prima transizione da uno stato di apertura "
         "a uno stato di esecuzione, ad esempio **Da fare → ANALISI** oppure "
         "**Da fare → IN CORSO**. "
-        "Il tempo trascorso nello stato **BLOCCATO** "
+        "Il tempo trascorso negli stati **ON HOLD TEMP** e **BLOCCATO** "
         "viene escluso dal calcolo netto. "
         "I giorni mostrati sono **giorni lavorativi equivalenti da 8 ore**, "
         "non giorni solari."
@@ -940,6 +963,7 @@ def render_resolution_time_section(
             jira_api_token=jira_api_token,
         )
 
+        resolution_df = ensure_epic_column(resolution_df)
         st.session_state["resolution_time_df"] = resolution_df
 
     if not st.session_state.get("resolution_time_loaded", False):
@@ -955,6 +979,8 @@ def render_resolution_time_section(
         st.info("Nessun tempo di risoluzione disponibile.")
         return
 
+    resolution_df = ensure_epic_column(resolution_df)
+
     calculated_df = resolution_df[
         resolution_df["Esito"].isin(
             [
@@ -963,6 +989,8 @@ def render_resolution_time_section(
             ]
         )
     ].copy()
+
+    calculated_df = ensure_epic_column(calculated_df)
 
     total_rows = len(resolution_df)
     calculated_tickets = len(calculated_df)
@@ -1025,8 +1053,7 @@ def render_resolution_time_section(
 
         st.caption(
             "Questa tabella permette di confrontare il tempo medio di risoluzione "
-            "tra le diverse Epic. È utile per distinguere ticket con peso diverso, "
-            "ad esempio Epic AM rispetto a Epic di gestione memoria."
+            "tra le diverse Epic."
         )
 
         st.dataframe(
