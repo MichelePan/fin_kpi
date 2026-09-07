@@ -1,3 +1,4 @@
+import html
 import pandas as pd
 import plotly.express as px
 import streamlit as st
@@ -29,6 +30,45 @@ def filter_task_bug(df: pd.DataFrame):
         .isin(TASK_BUG_TYPES)
     ].copy()
 
+def render_metric_card(label, value, color="#172033", background="#ffffff"):
+    safe_label = html.escape(str(label))
+    safe_value = html.escape(str(value))
+
+    st.markdown(
+        f"""
+        <div style="
+            background: {background};
+            border: 1px solid rgba(16, 24, 40, 0.08);
+            border-radius: 16px;
+            padding: 18px 18px;
+            box-shadow: 0 6px 18px rgba(16, 24, 40, 0.06);
+            min-height: 104px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+        ">
+            <div style="
+                color: #667085;
+                font-size: 0.88rem;
+                font-weight: 600;
+                margin-bottom: 8px;
+                line-height: 1.2;
+            ">
+                {safe_label}
+            </div>
+            <div style="
+                color: {color};
+                font-size: 2rem;
+                font-weight: 800;
+                line-height: 1.1;
+            ">
+                {safe_value}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
 def render_kpis(df: pd.DataFrame):
     if df.empty:
         st.info("Nessun dato disponibile per i filtri selezionati.")
@@ -43,26 +83,13 @@ def render_kpis(df: pd.DataFrame):
     task_bug_done = int(task_bug_df["Done"].sum()) if not task_bug_df.empty else 0
     task_bug_open = task_bug_count - task_bug_done
 
-    completion_rate = 0
-
-    if task_bug_count > 0:
-        completion_rate = round((task_bug_done / task_bug_count) * 100, 1)
-
     unassigned_task_bug = 0
-    assignee_task_bug = 0
     cancelled_task_bug = 0
     blocked_task_bug = 0
 
     if not task_bug_df.empty:
         unassigned_task_bug = int(
             (task_bug_df["Assignee"].fillna("").str.strip() == "").sum()
-        )
-
-        assignee_task_bug = int(
-            task_bug_df["Assignee"]
-            .replace("", pd.NA)
-            .dropna()
-            .nunique()
         )
 
         cancelled_task_bug = int(
@@ -79,21 +106,59 @@ def render_kpis(df: pd.DataFrame):
             .sum()
         )
 
-    c1, c2, c3, c4, c5 = st.columns(5)
+    c1, c2, c3, c4 = st.columns(4)
 
-    c1.metric("Task/Bug", task_bug_count)
-    c2.metric("Task/Bug aperti", task_bug_open)
-    c3.metric("Task/Bug completati", task_bug_done)
-    c4.metric("Avanzamento Task/Bug", f"{completion_rate}%")
-    c5.metric("Task/Bug non assegnati", unassigned_task_bug)
+    with c1:
+        render_metric_card(
+            label="Task/Bug",
+            value=task_bug_count,
+        )
 
-    c6, c7, c8, c9, c10 = st.columns(5)
+    with c2:
+        render_metric_card(
+            label="Task/Bug aperti",
+            value=task_bug_open,
+        )
 
-    c6.metric("Task/Bug annullati", cancelled_task_bug)
-    c7.metric("Task/Bug bloccati", blocked_task_bug)
-    c8.metric("Altri issue type", other_issue_types_count)
-    c9.metric("Issue totali", total_issues)
-    c10.metric("Assegnatari Task/Bug", assignee_task_bug)
+    with c3:
+        render_metric_card(
+            label="Task/Bug completati",
+            value=task_bug_done,
+            color="#027A48",
+            background="#ECFDF3",
+        )
+
+    with c4:
+        render_metric_card(
+            label="Task/Bug non assegnati",
+            value=unassigned_task_bug,
+        )
+
+    c5, c6, c7, c8 = st.columns(4)
+
+    with c5:
+        render_metric_card(
+            label="Task/Bug annullati",
+            value=cancelled_task_bug,
+        )
+
+    with c6:
+        render_metric_card(
+            label="Task/Bug bloccati",
+            value=blocked_task_bug,
+        )
+
+    with c7:
+        render_metric_card(
+            label="Altri issue type",
+            value=other_issue_types_count,
+        )
+
+    with c8:
+        render_metric_card(
+            label="Issue totali",
+            value=total_issues,
+        )
 
 def render_status_panel(df: pd.DataFrame, key_suffix: str = "default"):
     st.subheader("Task/Bug per stato")
