@@ -14,7 +14,6 @@ from ui_components import (
     render_status_category_panel,
     render_assignee_panel,
     render_priority_panel,
-    render_age_panel,
 )
 from resolution_time import render_resolution_time_section
 
@@ -499,10 +498,6 @@ with tab_overview:
 
     with col2:
         render_priority_panel(df_view, key_suffix="overview")
-
-    st.divider()
-
-    render_age_panel(df_view, key_suffix="overview")
 
 with tab_people:
     render_assignee_panel(df_view, key_suffix="people")
