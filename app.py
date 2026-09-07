@@ -1,10 +1,5 @@
-import io
-import requests
 import streamlit as st
 import pandas as pd
-
-from datetime import date, timedelta, datetime
-from requests.auth import HTTPBasicAuth
 
 from auth import login_required, render_logout
 from jira_client import JiraClient
@@ -12,7 +7,6 @@ from data_processing import (
     build_issues_dataframe,
     add_issue_urls,
     apply_filters,
-    create_excel_export,
 )
 from ui_components import (
     render_kpis,
@@ -22,8 +16,6 @@ from ui_components import (
     render_assignee_panel,
     render_priority_panel,
     render_age_panel,
-    render_detail_table,
-    render_worklog_tables,
 )
 from resolution_time import render_resolution_time_section
 
@@ -109,24 +101,6 @@ refresh = st.sidebar.button(
     key="refresh_data",
 )
 
-st.sidebar.header("Periodo worklog")
-
-worklog_date_from = st.sidebar.date_input(
-    "Dal",
-    value=date.today() - timedelta(days=7),
-    key="worklog_date_from",
-)
-
-worklog_date_to = st.sidebar.date_input(
-    "Al",
-    value=date.today(),
-    key="worklog_date_to",
-)
-
-if worklog_date_from > worklog_date_to:
-    st.sidebar.error("Periodo worklog non valido.")
-    st.stop()
-
 # ======================
 # CACHE
 # ======================
@@ -167,65 +141,9 @@ def cached_search_issues(
 
     return client.search_issues_jql(jql_query, fields)
 
-def get_issue_worklogs(domain, email, token, issue_key):
-    domain = normalize_domain(domain)
-    base_url = f"https://{domain}/rest/api/3"
-
-    auth = HTTPBasicAuth(email, token)
-
-    headers = {
-        "Accept": "application/json",
-    }
-
-    start_at = 0
-    max_results = 100
-    all_worklogs = []
-
-    while True:
-        url = f"{base_url}/issue/{issue_key}/worklog"
-
-        params = {
-            "startAt": start_at,
-            "maxResults": max_results,
-        }
-
-        response = requests.get(
-            url,
-            params=params,
-            headers=headers,
-            auth=auth,
-            timeout=60,
-        )
-
-        if not response.ok:
-            raise RuntimeError(
-                f"Errore Jira worklog {issue_key}: "
-                f"{response.status_code} - {response.text}"
-            )
-
-        data = response.json()
-        worklogs = data.get("worklogs", [])
-
-        all_worklogs.extend(worklogs)
-
-        total = data.get("total", 0)
-        start_at += len(worklogs)
-
-        if start_at >= total:
-            break
-
-        if not worklogs:
-            break
-
-    return all_worklogs
-
 if refresh:
     st.cache_data.clear()
-    st.session_state["worklog_loaded"] = False
     st.session_state["resolution_time_loaded"] = False
-
-    if "worklog_df" in st.session_state:
-        del st.session_state["worklog_df"]
 
     if "resolution_time_df" in st.session_state:
         del st.session_state["resolution_time_df"]
@@ -236,17 +154,8 @@ if refresh:
     st.rerun()
 
 # ======================
-# WORKLOG HELPERS
+# ISSUE HELPERS
 # ======================
-
-def parse_worklog_date(started_value):
-    if not started_value:
-        return None
-
-    try:
-        return datetime.strptime(started_value[:10], "%Y-%m-%d").date()
-    except Exception:
-        return None
 
 def estimate_hours_from_fields(fields: dict) -> float:
     timetracking = fields.get("timetracking") or {}
@@ -285,159 +194,6 @@ def add_estimates_to_issue_dataframe(
     updated_df["Stima (in ore)"] = updated_df["StimaOre"]
 
     return updated_df
-
-def build_worklog_dataframe(
-    issue_df: pd.DataFrame,
-    worklogs_by_issue: dict,
-    date_from: date,
-    date_to: date,
-):
-    columns = [
-        "Data",
-        "Utente",
-        "Issue",
-        "Summary",
-        "EpicKey",
-        "EpicName",
-        "StimaOre",
-        "Ore",
-        "Ore Consuntivate",
-        "Stato",
-        "Stima (in ore)",
-        "Url",
-    ]
-
-    if issue_df.empty:
-        return pd.DataFrame(columns=columns)
-
-    issue_lookup = (
-        issue_df
-        .drop_duplicates(subset=["Issue"])
-        .set_index("Issue")
-        .to_dict(orient="index")
-    )
-
-    rows = []
-
-    for issue_key, worklogs in worklogs_by_issue.items():
-        issue_info = issue_lookup.get(issue_key, {})
-        stima_ore = issue_info.get("StimaOre", 0)
-
-        for worklog in worklogs:
-            worklog_day = parse_worklog_date(worklog.get("started"))
-
-            if worklog_day is None:
-                continue
-
-            if worklog_day < date_from or worklog_day > date_to:
-                continue
-
-            author = worklog.get("author") or {}
-
-            user = (
-                author.get("displayName")
-                or author.get("emailAddress")
-                or author.get("accountId")
-                or ""
-            )
-
-            hours = round((worklog.get("timeSpentSeconds", 0) or 0) / 3600, 2)
-
-            rows.append(
-                {
-                    "Data": worklog_day,
-                    "Utente": user,
-                    "Issue": issue_key,
-                    "Summary": issue_info.get("Summary", ""),
-                    "EpicKey": issue_info.get("EpicKey", ""),
-                    "EpicName": issue_info.get("EpicName", ""),
-                    "StimaOre": stima_ore,
-                    "Ore": hours,
-                    "Ore Consuntivate": hours,
-                    "Stato": issue_info.get("Stato", ""),
-                    "Stima (in ore)": stima_ore,
-                    "Url": issue_info.get("Url", ""),
-                }
-            )
-
-    df = pd.DataFrame(rows, columns=columns)
-
-    if df.empty:
-        return df
-
-    df["Data"] = pd.to_datetime(df["Data"])
-    df["StimaOre"] = pd.to_numeric(df["StimaOre"], errors="coerce").fillna(0)
-    df["Ore"] = pd.to_numeric(df["Ore"], errors="coerce").fillna(0)
-
-    df["Ore Consuntivate"] = pd.to_numeric(
-        df["Ore Consuntivate"],
-        errors="coerce",
-    ).fillna(0)
-
-    df["Stima (in ore)"] = pd.to_numeric(
-        df["Stima (in ore)"],
-        errors="coerce",
-    ).fillna(0)
-
-    df = df.sort_values(
-        ["Data", "Utente", "Issue"],
-        ascending=[False, True, True],
-    )
-
-    return df
-
-def create_worklog_excel_export(worklog_df: pd.DataFrame):
-    output = io.BytesIO()
-
-    export_df = worklog_df.copy()
-
-    if "Data" in export_df.columns:
-        export_df["Data"] = pd.to_datetime(export_df["Data"], errors="coerce")
-
-    export_columns = [
-        "Data",
-        "Utente",
-        "Issue",
-        "Summary",
-        "EpicKey",
-        "EpicName",
-        "StimaOre",
-        "Ore Consuntivate",
-        "Stato",
-        "Stima (in ore)",
-        "Url",
-    ]
-
-    existing_columns = [
-        column
-        for column in export_columns
-        if column in export_df.columns
-    ]
-
-    export_df = export_df[existing_columns]
-
-    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-        export_df.to_excel(writer, index=False, sheet_name="Worklog")
-
-        workbook = writer.book
-        worksheet = writer.sheets["Worklog"]
-
-        date_format = workbook.add_format({"num_format": "dd/mm/yyyy"})
-        number_format = workbook.add_format({"num_format": "0.00"})
-
-        worksheet.set_column("A:A", 12, date_format)
-        worksheet.set_column("B:B", 28)
-        worksheet.set_column("C:C", 14)
-        worksheet.set_column("D:D", 60)
-        worksheet.set_column("E:F", 28)
-        worksheet.set_column("G:H", 16, number_format)
-        worksheet.set_column("I:I", 18)
-        worksheet.set_column("J:J", 16, number_format)
-        worksheet.set_column("K:K", 60)
-
-    output.seek(0)
-
-    return output
 
 # ======================
 # LOAD DATA
@@ -601,14 +357,12 @@ render_kpis(df_view)
 
 st.divider()
 
-tab_overview, tab_epic, tab_people, tab_worklog, tab_resolution_time, tab_details = st.tabs(
+tab_overview, tab_epic, tab_people, tab_resolution_time = st.tabs(
     [
         "Overview",
         "Epic",
         "Persone",
-        "Worklog",
         "Tempi risoluzione",
-        "Dettaglio",
     ]
 )
 
@@ -635,110 +389,10 @@ with tab_epic:
 with tab_people:
     render_assignee_panel(df_view, key_suffix="people")
 
-with tab_worklog:
-    st.subheader("Worklog")
-
-    st.caption(
-        "Le tabelle mostrano le ore consuntivate su Jira nel periodo selezionato "
-        "nella sidebar."
-    )
-
-    if df_view.empty:
-        st.info("Nessuna issue disponibile per i filtri selezionati.")
-    else:
-        issue_keys = (
-            df_view["Issue"]
-            .dropna()
-            .drop_duplicates()
-            .sort_values()
-            .tolist()
-        )
-
-        if not issue_keys:
-            st.info("Nessuna issue disponibile per il caricamento dei worklog.")
-        else:
-            load_worklog = st.button(
-                "Carica worklog",
-                key="load_worklog_button",
-                use_container_width=False,
-            )
-
-            if load_worklog:
-                st.session_state["worklog_loaded"] = True
-
-            if not st.session_state.get("worklog_loaded", False):
-                st.info(
-                    "Premi **Carica worklog** per recuperare le ore segnate su Jira "
-                    "per le issue attualmente filtrate."
-                )
-            else:
-                worklogs_by_issue = {}
-
-                progress_text = st.empty()
-                progress_bar = st.progress(0)
-
-                for index, issue_key in enumerate(issue_keys, start=1):
-                    progress_text.write(
-                        f"Caricamento worklog {index}/{len(issue_keys)}: {issue_key}"
-                    )
-
-                    try:
-                        worklogs_by_issue[issue_key] = get_issue_worklogs(
-                            jira_domain,
-                            jira_email,
-                            jira_api_token,
-                            issue_key,
-                        )
-                    except Exception:
-                        worklogs_by_issue[issue_key] = []
-
-                    progress_bar.progress(index / len(issue_keys))
-
-                progress_text.empty()
-                progress_bar.empty()
-
-                worklog_df = build_worklog_dataframe(
-                    issue_df=df_view,
-                    worklogs_by_issue=worklogs_by_issue,
-                    date_from=worklog_date_from,
-                    date_to=worklog_date_to,
-                )
-
-                render_worklog_tables(
-                    worklog_df,
-                    date_from=worklog_date_from,
-                    date_to=worklog_date_to,
-                    key_suffix="worklog",
-                )
-
-                if not worklog_df.empty:
-                    worklog_excel_file = create_worklog_excel_export(worklog_df)
-
-                    st.download_button(
-                        label="📥 Scarica Excel Worklog",
-                        data=worklog_excel_file,
-                        file_name="jira_worklog.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        key="download_excel_worklog",
-                    )
-
 with tab_resolution_time:
     render_resolution_time_section(
         issue_df=df_view,
         jira_domain=jira_domain,
         jira_email=jira_email,
         jira_api_token=jira_api_token,
-    )
-
-with tab_details:
-    render_detail_table(df_view, key_suffix="details")
-
-    excel_file = create_excel_export(df_view)
-
-    st.download_button(
-        label="📥 Scarica Excel",
-        data=excel_file,
-        file_name="jira_project_dashboard.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key="download_excel_details",
     )
