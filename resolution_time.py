@@ -21,30 +21,24 @@ TASK_BUG_TYPES = {
 # ======================
 
 OPENING_STATUSES = {
-    "DA FARE",
     "Da fare"
 }
 
 EXECUTION_STATUSES = {
-    "ANALISI",
-    "ANALISI PRELIMINARE",
-    "IN CORSO",
+    "In corso",
     "Analisi",
     "In revisione/Test",
+    "ON HOLD TEMP"
 }
 
 EXCLUDED_STATUSES = {
-    "ON HOLD TEMP",
-    "BLOCCATO",
+    "BLOCCATO"
 }
 
 CLOSING_STATUSES = {
-    "DONE",
-    "CHIUSO",
-    "VERBALE CHIUSO",
-    "FATTO",
+    "ANNULLATO",
     "TICKET FIL NON CHIUSO",
-    "ANNULLATO"
+    "Verbale Chiuso"
 }
 
 # ======================
