@@ -631,7 +631,6 @@ def build_resolution_time_dataframe(
         )
 
         rows.append(row)
-
         progress_bar.progress(index / total_issues)
 
     progress_text.empty()
@@ -725,9 +724,12 @@ def build_epic_resolution_summary(calculated_df: pd.DataFrame) -> pd.DataFrame:
 
     return summary_df[columns]
 
-def build_monthly_resolution_summary(calculated_df: pd.DataFrame) -> pd.DataFrame:
+def build_monthly_resolution_summary_by_epic(
+    calculated_df: pd.DataFrame,
+) -> pd.DataFrame:
     columns = [
         "Mese",
+        "Epic",
         "Ticket calcolati",
         "Tempo medio netto giorni",
         "Tempo mediano netto giorni",
@@ -739,7 +741,7 @@ def build_monthly_resolution_summary(calculated_df: pd.DataFrame) -> pd.DataFram
     if calculated_df.empty:
         return pd.DataFrame(columns=columns)
 
-    monthly_df = calculated_df.copy()
+    monthly_df = ensure_epic_column(calculated_df)
 
     monthly_df["Data fine lavorazione"] = pd.to_datetime(
         monthly_df["Data fine lavorazione"],
@@ -783,7 +785,7 @@ def build_monthly_resolution_summary(calculated_df: pd.DataFrame) -> pd.DataFram
 
     summary_df = (
         monthly_df
-        .groupby("Mese", dropna=False)
+        .groupby(["Mese", "Epic"], dropna=False)
         .agg(
             **{
                 "Ticket calcolati": ("Issue", "count"),
@@ -795,7 +797,7 @@ def build_monthly_resolution_summary(calculated_df: pd.DataFrame) -> pd.DataFram
             }
         )
         .reset_index()
-        .sort_values("Mese")
+        .sort_values(["Mese", "Epic"])
     )
 
     numeric_columns = [
@@ -832,7 +834,9 @@ def make_datetime_excel_safe(value):
 
     return parsed_value
 
-def prepare_resolution_dataframe_for_excel(resolution_df: pd.DataFrame) -> pd.DataFrame:
+def prepare_resolution_dataframe_for_excel(
+    resolution_df: pd.DataFrame,
+) -> pd.DataFrame:
     export_df = resolution_df.copy()
     export_df = ensure_epic_column(export_df)
 
@@ -869,7 +873,9 @@ def create_resolution_time_excel_export(resolution_df: pd.DataFrame):
         ].copy()
 
         epic_summary_df = build_epic_resolution_summary(calculated_df)
-        monthly_summary_df = build_monthly_resolution_summary(calculated_df)
+        monthly_summary_df = build_monthly_resolution_summary_by_epic(
+            calculated_df
+        )
 
         if not epic_summary_df.empty:
             epic_summary_df.to_excel(
@@ -920,8 +926,9 @@ def create_resolution_time_excel_export(resolution_df: pd.DataFrame):
         if not monthly_summary_df.empty:
             monthly_sheet = writer.sheets["Andamento mensile"]
             monthly_sheet.set_column("A:A", 14)
-            monthly_sheet.set_column("B:B", 18)
-            monthly_sheet.set_column("C:G", 26, number_format)
+            monthly_sheet.set_column("B:B", 50)
+            monthly_sheet.set_column("C:C", 18)
+            monthly_sheet.set_column("D:H", 26, number_format)
 
     output.seek(0)
 
@@ -1146,9 +1153,9 @@ def render_resolution_time_section(
 
     st.divider()
 
-    st.subheader("Andamento mensile tempi medi")
+    st.subheader("Andamento mensile tempi medi per Epic")
 
-    monthly_summary_df = build_monthly_resolution_summary(calculated_df)
+    monthly_summary_df = build_monthly_resolution_summary_by_epic(calculated_df)
 
     if monthly_summary_df.empty:
         st.info(
@@ -1157,7 +1164,7 @@ def render_resolution_time_section(
     else:
         st.caption(
             "Il grafico mostra come cambia il **tempo medio netto di risoluzione** "
-            "mese per mese, considerando i ticket chiusi da giugno ad oggi. "
+            "mese per mese, separando i valori per **Epic**. "
             "I giorni sono giorni lavorativi equivalenti da 8 ore."
         )
 
@@ -1165,36 +1172,34 @@ def render_resolution_time_section(
             monthly_summary_df,
             x="Mese",
             y="Tempo medio netto giorni",
+            color="Epic",
             markers=True,
             text="Tempo medio netto giorni",
-            title="Andamento mensile del tempo medio di risoluzione",
+            title="Andamento mensile del tempo medio di risoluzione per Epic",
         )
 
         fig.update_layout(
             xaxis_title="Mese chiusura",
             yaxis_title="Tempo medio netto giorni lav.",
+            legend_title="Epic",
         )
 
         fig.update_traces(
-            line_color="#2563EB",
-            marker=dict(
-                size=9,
-                color="#2563EB",
-            ),
+            marker=dict(size=9),
             textposition="top center",
         )
 
         st.plotly_chart(
             fig,
             use_container_width=True,
-            key="resolution_time_monthly_trend_chart",
+            key="resolution_time_monthly_trend_by_epic_chart",
         )
 
         st.dataframe(
             monthly_summary_df,
             use_container_width=True,
             hide_index=True,
-            key="resolution_time_monthly_summary_table",
+            key="resolution_time_monthly_summary_by_epic_table",
             column_config={
                 "Tempo medio netto giorni": st.column_config.NumberColumn(
                     "Tempo medio netto giorni lav.",
