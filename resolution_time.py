@@ -635,10 +635,41 @@ def build_resolution_time_dataframe(
 # EXPORT
 # ======================
 
+def make_datetime_excel_safe(value):
+    if value is None or pd.isna(value):
+        return pd.NaT
+
+    parsed_value = pd.to_datetime(
+        value,
+        errors="coerce",
+    )
+
+    if pd.isna(parsed_value):
+        return pd.NaT
+
+    if getattr(parsed_value, "tzinfo", None) is not None:
+        parsed_value = parsed_value.tz_convert(None)
+
+    return parsed_value
+
+def prepare_resolution_dataframe_for_excel(resolution_df: pd.DataFrame) -> pd.DataFrame:
+    export_df = resolution_df.copy()
+
+    datetime_columns = [
+        "Data inizio lavorazione",
+        "Data fine lavorazione",
+    ]
+
+    for column in datetime_columns:
+        if column in export_df.columns:
+            export_df[column] = export_df[column].apply(make_datetime_excel_safe)
+
+    return export_df
+
 def create_resolution_time_excel_export(resolution_df: pd.DataFrame):
     output = io.BytesIO()
 
-    export_df = resolution_df.copy()
+    export_df = prepare_resolution_dataframe_for_excel(resolution_df)
 
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
         export_df.to_excel(
