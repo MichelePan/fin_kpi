@@ -3,6 +3,7 @@ import re
 import unicodedata
 import requests
 import pandas as pd
+import plotly.express as px
 import streamlit as st
 
 from requests.auth import HTTPBasicAuth
@@ -46,6 +47,7 @@ CLOSING_STATUSES = {
 }
 
 WORKING_HOURS_PER_DAY = 8
+MONTHLY_TREND_START_MONTH = 6
 
 # ======================
 # NORMALIZZAZIONE
@@ -723,6 +725,92 @@ def build_epic_resolution_summary(calculated_df: pd.DataFrame) -> pd.DataFrame:
 
     return summary_df[columns]
 
+def build_monthly_resolution_summary(calculated_df: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        "Mese",
+        "Ticket calcolati",
+        "Tempo medio netto giorni",
+        "Tempo mediano netto giorni",
+        "Tempo massimo netto giorni",
+        "Tempo medio netto ore",
+        "Tempo escluso medio giorni",
+    ]
+
+    if calculated_df.empty:
+        return pd.DataFrame(columns=columns)
+
+    monthly_df = calculated_df.copy()
+
+    monthly_df["Data fine lavorazione"] = pd.to_datetime(
+        monthly_df["Data fine lavorazione"],
+        utc=True,
+        errors="coerce",
+    )
+
+    monthly_df = monthly_df.dropna(subset=["Data fine lavorazione"])
+
+    if monthly_df.empty:
+        return pd.DataFrame(columns=columns)
+
+    monthly_df["Data fine lavorazione"] = (
+        monthly_df["Data fine lavorazione"]
+        .dt.tz_convert(None)
+    )
+
+    today = pd.Timestamp.today().normalize()
+    start_date = pd.Timestamp(
+        year=today.year,
+        month=MONTHLY_TREND_START_MONTH,
+        day=1,
+    )
+
+    monthly_df = monthly_df[
+        monthly_df["Data fine lavorazione"] >= start_date
+    ]
+
+    monthly_df = monthly_df[
+        monthly_df["Data fine lavorazione"] <= today + pd.Timedelta(days=1)
+    ]
+
+    if monthly_df.empty:
+        return pd.DataFrame(columns=columns)
+
+    monthly_df["Mese"] = (
+        monthly_df["Data fine lavorazione"]
+        .dt.to_period("M")
+        .astype(str)
+    )
+
+    summary_df = (
+        monthly_df
+        .groupby("Mese", dropna=False)
+        .agg(
+            **{
+                "Ticket calcolati": ("Issue", "count"),
+                "Tempo medio netto giorni": ("Tempo netto giorni", "mean"),
+                "Tempo mediano netto giorni": ("Tempo netto giorni", "median"),
+                "Tempo massimo netto giorni": ("Tempo netto giorni", "max"),
+                "Tempo medio netto ore": ("Tempo netto ore", "mean"),
+                "Tempo escluso medio giorni": ("Tempo escluso giorni", "mean"),
+            }
+        )
+        .reset_index()
+        .sort_values("Mese")
+    )
+
+    numeric_columns = [
+        "Tempo medio netto giorni",
+        "Tempo mediano netto giorni",
+        "Tempo massimo netto giorni",
+        "Tempo medio netto ore",
+        "Tempo escluso medio giorni",
+    ]
+
+    for column in numeric_columns:
+        summary_df[column] = summary_df[column].round(2)
+
+    return summary_df[columns]
+
 # ======================
 # EXPORT
 # ======================
@@ -781,12 +869,20 @@ def create_resolution_time_excel_export(resolution_df: pd.DataFrame):
         ].copy()
 
         epic_summary_df = build_epic_resolution_summary(calculated_df)
+        monthly_summary_df = build_monthly_resolution_summary(calculated_df)
 
         if not epic_summary_df.empty:
             epic_summary_df.to_excel(
                 writer,
                 index=False,
                 sheet_name="Tempi per Epic",
+            )
+
+        if not monthly_summary_df.empty:
+            monthly_summary_df.to_excel(
+                writer,
+                index=False,
+                sheet_name="Andamento mensile",
             )
 
         workbook = writer.book
@@ -820,6 +916,12 @@ def create_resolution_time_excel_export(resolution_df: pd.DataFrame):
             epic_sheet.set_column("A:A", 50)
             epic_sheet.set_column("B:B", 18)
             epic_sheet.set_column("C:G", 24, number_format)
+
+        if not monthly_summary_df.empty:
+            monthly_sheet = writer.sheets["Andamento mensile"]
+            monthly_sheet.set_column("A:A", 14)
+            monthly_sheet.set_column("B:B", 18)
+            monthly_sheet.set_column("C:G", 26, number_format)
 
     output.seek(0)
 
@@ -1041,6 +1143,81 @@ def render_resolution_time_section(
     else:
         c7.metric("Tempo massimo netto", "0 giorni lav.")
         c8.metric("Tempo escluso medio", "0 giorni lav.")
+
+    st.divider()
+
+    st.subheader("Andamento mensile tempi medi")
+
+    monthly_summary_df = build_monthly_resolution_summary(calculated_df)
+
+    if monthly_summary_df.empty:
+        st.info(
+            "Nessun ticket calcolato con data fine lavorazione da giugno ad oggi."
+        )
+    else:
+        st.caption(
+            "Il grafico mostra come cambia il **tempo medio netto di risoluzione** "
+            "mese per mese, considerando i ticket chiusi da giugno ad oggi. "
+            "I giorni sono giorni lavorativi equivalenti da 8 ore."
+        )
+
+        fig = px.line(
+            monthly_summary_df,
+            x="Mese",
+            y="Tempo medio netto giorni",
+            markers=True,
+            text="Tempo medio netto giorni",
+            title="Andamento mensile del tempo medio di risoluzione",
+        )
+
+        fig.update_layout(
+            xaxis_title="Mese chiusura",
+            yaxis_title="Tempo medio netto giorni lav.",
+        )
+
+        fig.update_traces(
+            line_color="#2563EB",
+            marker=dict(
+                size=9,
+                color="#2563EB",
+            ),
+            textposition="top center",
+        )
+
+        st.plotly_chart(
+            fig,
+            use_container_width=True,
+            key="resolution_time_monthly_trend_chart",
+        )
+
+        st.dataframe(
+            monthly_summary_df,
+            use_container_width=True,
+            hide_index=True,
+            key="resolution_time_monthly_summary_table",
+            column_config={
+                "Tempo medio netto giorni": st.column_config.NumberColumn(
+                    "Tempo medio netto giorni lav.",
+                    format="%.2f",
+                ),
+                "Tempo mediano netto giorni": st.column_config.NumberColumn(
+                    "Tempo mediano netto giorni lav.",
+                    format="%.2f",
+                ),
+                "Tempo massimo netto giorni": st.column_config.NumberColumn(
+                    "Tempo massimo netto giorni lav.",
+                    format="%.2f",
+                ),
+                "Tempo medio netto ore": st.column_config.NumberColumn(
+                    "Tempo medio netto ore",
+                    format="%.2f",
+                ),
+                "Tempo escluso medio giorni": st.column_config.NumberColumn(
+                    "Tempo escluso medio giorni lav.",
+                    format="%.2f",
+                ),
+            },
+        )
 
     st.divider()
 
