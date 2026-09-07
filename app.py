@@ -14,6 +14,7 @@ from ui_components import (
     render_status_category_panel,
     render_assignee_panel,
     render_priority_panel,
+    render_priority_monthly_panel,
 )
 from resolution_time import render_resolution_time_section
 
@@ -38,7 +39,7 @@ login_required()
 # ======================
 
 st.title("📊 Jira Project Dashboard")
-st.caption("Dashboard di monitoraggio avanzamento progetto e KPI")
+st.caption("Dashboard di monitoraggio avanzamento progetto basata su issue Jira")
 
 # ======================
 # CONFIG
@@ -319,6 +320,7 @@ def add_customer_priority_to_issue_dataframe(
 
     if not customer_priority_field_id:
         updated_df["Priorità cliente"] = ""
+        updated_df["Priority"] = ""
         return updated_df
 
     customer_priority_map = {}
@@ -547,6 +549,10 @@ with tab_overview:
 
     with col2:
         render_priority_panel(df_view, key_suffix="overview")
+
+    st.divider()
+
+    render_priority_monthly_panel(df_view, key_suffix="overview")
 
 with tab_people:
     render_assignee_panel(df_view, key_suffix="people")
