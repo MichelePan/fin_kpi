@@ -84,6 +84,9 @@ def normalize_status(value) -> str:
 def is_task_or_bug(issue_type) -> bool:
     return normalize_issue_type(issue_type) in TASK_BUG_TYPES
 
+def is_closing_status(status) -> bool:
+    return normalize_status(status) in CLOSING_STATUSES
+
 # ======================
 # JIRA API
 # ======================
@@ -140,7 +143,6 @@ def get_issue_changelog(
             )
 
         data = response.json() or {}
-
         histories = data.get("values", []) or []
 
         all_histories.extend(histories)
@@ -286,6 +288,10 @@ def compute_resolution_time_for_issue(
         result["Esito"] = "Escluso: issue type non Task/Bug"
         return result
 
+    if not is_closing_status(issue_info.get("Stato", "")):
+        result["Esito"] = "Escluso: ticket non in stato di chiusura"
+        return result
+
     events = extract_status_events(changelog)
 
     if not events:
@@ -337,6 +343,22 @@ def compute_resolution_time_for_issue(
 
     return result
 
+def filter_closed_task_bug_issues(issue_df: pd.DataFrame) -> pd.DataFrame:
+    if issue_df.empty:
+        return issue_df.copy()
+
+    filtered_df = issue_df.copy()
+
+    filtered_df = filtered_df[
+        filtered_df["IssueType"].apply(is_task_or_bug)
+    ]
+
+    filtered_df = filtered_df[
+        filtered_df["Stato"].apply(is_closing_status)
+    ]
+
+    return filtered_df.copy()
+
 def build_resolution_time_dataframe(
     issue_df: pd.DataFrame,
     jira_domain: str,
@@ -367,9 +389,14 @@ def build_resolution_time_dataframe(
     if issue_df.empty:
         return pd.DataFrame(columns=columns)
 
+    closed_task_bug_df = filter_closed_task_bug_issues(issue_df)
+
+    if closed_task_bug_df.empty:
+        return pd.DataFrame(columns=columns)
+
     rows = []
 
-    issue_records = issue_df.to_dict(orient="records")
+    issue_records = closed_task_bug_df.to_dict(orient="records")
     total_issues = len(issue_records)
 
     progress_text = st.empty()
@@ -381,15 +408,6 @@ def build_resolution_time_dataframe(
         progress_text.write(
             f"Calcolo tempi {index}/{total_issues}: {issue_key}"
         )
-
-        if not is_task_or_bug(issue_info.get("IssueType", "")):
-            row = compute_resolution_time_for_issue(
-                issue_info=issue_info,
-                changelog=[],
-            )
-            rows.append(row)
-            progress_bar.progress(index / total_issues)
-            continue
 
         try:
             changelog = get_issue_changelog(
@@ -526,19 +544,37 @@ def render_resolution_time_section(
     st.subheader("Tempi di risoluzione")
 
     st.caption(
-        "Il tempo viene calcolato dalla transizione "
-        "**Da fare → ANALISI PRELIMINARE** fino alla prima transizione "
-        "verso uno stato di chiusura. Il tempo trascorso negli stati "
-        "**ON HOLD TEMP** e **BLOCCATO** viene escluso dal calcolo netto."
+        "Il tempo viene calcolato solo sui **Task/Bug già in stato di chiusura**. "
+        "Il calcolo parte dalla transizione **Da fare → ANALISI PRELIMINARE** "
+        "e termina alla prima transizione verso uno stato di chiusura. "
+        "Il tempo trascorso negli stati **ON HOLD TEMP** e **BLOCCATO** "
+        "viene escluso dal calcolo netto."
     )
 
     if issue_df.empty:
         st.info("Nessuna issue disponibile per i filtri selezionati.")
         return
 
+    closed_task_bug_df = filter_closed_task_bug_issues(issue_df)
+
+    if closed_task_bug_df.empty:
+        st.info(
+            "Nessun Task/Bug in stato di chiusura disponibile per il calcolo "
+            "dei tempi di risoluzione."
+        )
+        return
+
+    total_visible_issues = len(issue_df)
+    total_closed_task_bug = len(closed_task_bug_df)
+
+    st.caption(
+        f"Ticket nel perimetro filtrato: **{total_visible_issues}** · "
+        f"Task/Bug chiusi analizzati: **{total_closed_task_bug}**"
+    )
+
     issue_signature = "|".join(
         sorted(
-            issue_df["Issue"]
+            closed_task_bug_df["Issue"]
             .dropna()
             .drop_duplicates()
             .astype(str)
@@ -565,7 +601,7 @@ def render_resolution_time_section(
         st.session_state["resolution_time_loaded"] = True
 
         resolution_df = build_resolution_time_dataframe(
-            issue_df=issue_df,
+            issue_df=closed_task_bug_df,
             jira_domain=jira_domain,
             jira_email=jira_email,
             jira_api_token=jira_api_token,
@@ -576,7 +612,7 @@ def render_resolution_time_section(
     if not st.session_state.get("resolution_time_loaded", False):
         st.info(
             "Premi **Calcola / aggiorna tempi di risoluzione** per recuperare "
-            "la changelog Jira e calcolare i tempi task per task."
+            "la changelog Jira solo dei Task/Bug già chiusi e calcolare i tempi."
         )
         return
 
@@ -591,13 +627,8 @@ def render_resolution_time_section(
     ].copy()
 
     total_rows = len(resolution_df)
-    task_bug_rows = len(
-        resolution_df[
-            resolution_df["IssueType"].apply(is_task_or_bug)
-        ]
-    )
     calculated_tickets = len(calculated_df)
-    not_calculated_tickets = task_bug_rows - calculated_tickets
+    not_calculated_tickets = total_rows - calculated_tickets
 
     average_days = 0
     average_hours = 0
@@ -608,10 +639,12 @@ def render_resolution_time_section(
             calculated_df["Tempo netto giorni"].mean(),
             2,
         )
+
         average_hours = round(
             calculated_df["Tempo netto ore"].mean(),
             2,
         )
+
         median_days = round(
             calculated_df["Tempo netto giorni"].median(),
             2,
@@ -627,7 +660,7 @@ def render_resolution_time_section(
     c5, c6, c7, c8 = st.columns(4)
 
     c5.metric("Mediana risoluzione", f"{median_days} giorni")
-    c6.metric("Righe analizzate", total_rows)
+    c6.metric("Task/Bug chiusi analizzati", total_rows)
 
     if not calculated_df.empty:
         c7.metric(
