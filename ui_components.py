@@ -129,7 +129,7 @@ def render_kpis(df: pd.DataFrame):
 
     with c1:
         render_metric_card(
-            label="Task/Bug",
+            label="Task/Bug Totali",
             value=task_bug_count,
         )
 
