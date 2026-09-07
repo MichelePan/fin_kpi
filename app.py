@@ -38,7 +38,7 @@ login_required()
 # ======================
 
 st.title("📊 Jira Project Dashboard")
-st.caption("Dashboard di monitoraggio avanzamento progetto basata su issue Jira")
+st.caption("Dashboard di monitoraggio avanzamento progetto e KPI")
 
 # ======================
 # CONFIG
@@ -51,6 +51,11 @@ CUSTOMER_PRIORITY_FIELD_ALIASES = {
     "priorita cliente ",
     "priorità del cliente",
     "priorita del cliente",
+}
+
+ALLOWED_EPIC_NAMES = {
+    "AM",
+    "GESTIONE MEMORIA",
 }
 
 def get_secret(section: str, key: str, default=None):
@@ -71,6 +76,46 @@ def normalize_field_name(value) -> str:
         return ""
 
     return str(value).strip().lower()
+
+def normalize_text(value) -> str:
+    if value is None:
+        return ""
+
+    return str(value).strip().upper()
+
+def is_allowed_epic_value(value) -> bool:
+    normalized_value = normalize_text(value)
+
+    if not normalized_value:
+        return False
+
+    if normalized_value in ALLOWED_EPIC_NAMES:
+        return True
+
+    for allowed_epic_name in ALLOWED_EPIC_NAMES:
+        if allowed_epic_name in normalized_value:
+            return True
+
+    return False
+
+def filter_allowed_epics(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df.copy()
+
+    filtered_df = df.copy()
+
+    if "EpicName" not in filtered_df.columns:
+        filtered_df["EpicName"] = ""
+
+    if "EpicKey" not in filtered_df.columns:
+        filtered_df["EpicKey"] = ""
+
+    filtered_df = filtered_df[
+        filtered_df["EpicName"].apply(is_allowed_epic_value)
+        | filtered_df["EpicKey"].apply(is_allowed_epic_value)
+    ].copy()
+
+    return filtered_df
 
 jira_domain = get_secret("JIRA", "DOMAIN")
 jira_email = get_secret("JIRA", "EMAIL")
@@ -352,8 +397,17 @@ df = add_customer_priority_to_issue_dataframe(
 
 df = add_issue_urls(df, jira_domain)
 
+# ======================
+# FILTRO GLOBALE EPIC
+# ======================
+
+df = filter_allowed_epics(df)
+
 if df.empty:
-    st.info("Nessun dato disponibile.")
+    st.info(
+        "Nessun ticket disponibile nelle Epic abilitate: "
+        "**AM** e **Gestione Memoria**."
+    )
     st.stop()
 
 if not customer_priority_field_id:
@@ -368,6 +422,11 @@ if not customer_priority_field_id:
 # ======================
 
 st.sidebar.header("Filtri dashboard")
+
+st.sidebar.caption(
+    "La dashboard considera solo i ticket appartenenti alle Epic "
+    "**AM** e **Gestione Memoria**."
+)
 
 only_open = st.sidebar.checkbox(
     "Mostra solo task aperti",
@@ -412,6 +471,23 @@ selected_priorities = [
     for priority in selected_priorities_ui
 ]
 
+epic_df = df.copy()
+epic_df["EpicFilter"] = epic_df["EpicName"]
+
+epic_df.loc[
+    epic_df["EpicFilter"].fillna("").str.strip() == "",
+    "EpicFilter",
+] = epic_df["EpicKey"]
+
+epic_options = sorted(epic_df["EpicFilter"].dropna().unique())
+
+selected_epics = st.sidebar.multiselect(
+    "Epic",
+    options=epic_options,
+    default=[],
+    key="filter_epics",
+)
+
 assignee_options = sorted(
     df["Assignee"]
     .fillna("")
@@ -429,33 +505,6 @@ selected_assignees_ui = st.sidebar.multiselect(
 selected_assignees = [
     "" if assignee == "Non assegnato" else assignee
     for assignee in selected_assignees_ui
-]
-
-epic_df = df.copy()
-epic_df["EpicFilter"] = epic_df["EpicName"]
-
-epic_df.loc[
-    epic_df["EpicFilter"].fillna("").str.strip() == "",
-    "EpicFilter",
-] = epic_df["EpicKey"]
-
-epic_df.loc[
-    epic_df["EpicFilter"].fillna("").str.strip() == "",
-    "EpicFilter",
-] = "Senza Epic"
-
-epic_options = sorted(epic_df["EpicFilter"].dropna().unique())
-
-selected_epics_ui = st.sidebar.multiselect(
-    "Epic",
-    options=epic_options,
-    default=[],
-    key="filter_epics",
-)
-
-selected_epics = [
-    "" if epic == "Senza Epic" else epic
-    for epic in selected_epics_ui
 ]
 
 df_view = apply_filters(
