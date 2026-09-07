@@ -46,6 +46,15 @@ st.caption("Dashboard di monitoraggio avanzamento progetto basata su issue Jira"
 # CONFIG
 # ======================
 
+CUSTOMER_PRIORITY_FIELD_ALIASES = {
+    "priorità cliente",
+    "priorita cliente",
+    "priorità cliente ",
+    "priorita cliente ",
+    "priorità del cliente",
+    "priorita del cliente",
+}
+
 def get_secret(section: str, key: str, default=None):
     try:
         return st.secrets[section][key]
@@ -58,6 +67,12 @@ def normalize_domain(domain: str) -> str:
     domain = domain.replace("http://", "")
     domain = domain.strip("/")
     return domain
+
+def normalize_field_name(value) -> str:
+    if value is None:
+        return ""
+
+    return str(value).strip().lower()
 
 jira_domain = get_secret("JIRA", "DOMAIN")
 jira_email = get_secret("JIRA", "EMAIL")
@@ -110,6 +125,23 @@ def cached_detect_epic_link_field(domain, email, token):
     client = JiraClient(domain, email, token)
     return client.detect_epic_link_field()
 
+@st.cache_data(ttl=24 * 60 * 60)
+def cached_detect_customer_priority_field(domain, email, token):
+    client = JiraClient(domain, email, token)
+
+    try:
+        fields = client.get_fields()
+    except Exception:
+        return None
+
+    for field in fields:
+        field_name = normalize_field_name(field.get("name"))
+
+        if field_name in CUSTOMER_PRIORITY_FIELD_ALIASES:
+            return field.get("id")
+
+    return None
+
 @st.cache_data(ttl=30 * 60)
 def cached_search_issues(
     domain,
@@ -117,6 +149,7 @@ def cached_search_issues(
     token,
     jql_query,
     epic_link_field_id,
+    customer_priority_field_id,
 ):
     client = JiraClient(domain, email, token)
 
@@ -138,6 +171,9 @@ def cached_search_issues(
 
     if epic_link_field_id:
         fields.append(epic_link_field_id)
+
+    if customer_priority_field_id:
+        fields.append(customer_priority_field_id)
 
     return client.search_issues_jql(jql_query, fields)
 
@@ -195,6 +231,72 @@ def add_estimates_to_issue_dataframe(
 
     return updated_df
 
+def extract_custom_field_display_value(value):
+    if value is None:
+        return ""
+
+    if isinstance(value, str):
+        return value.strip()
+
+    if isinstance(value, (int, float)):
+        return str(value)
+
+    if isinstance(value, dict):
+        for key in ["value", "name", "displayName", "label"]:
+            if key in value and value.get(key):
+                return str(value.get(key)).strip()
+
+        return str(value)
+
+    if isinstance(value, list):
+        values = [
+            extract_custom_field_display_value(item)
+            for item in value
+        ]
+
+        values = [
+            item
+            for item in values
+            if item
+        ]
+
+        return ", ".join(values)
+
+    return str(value).strip()
+
+def add_customer_priority_to_issue_dataframe(
+    issue_df: pd.DataFrame,
+    issues: list[dict],
+    customer_priority_field_id: str | None,
+) -> pd.DataFrame:
+    if issue_df.empty:
+        return issue_df
+
+    updated_df = issue_df.copy()
+
+    if not customer_priority_field_id:
+        updated_df["Priorità cliente"] = ""
+        return updated_df
+
+    customer_priority_map = {}
+
+    for issue in issues:
+        issue_key = issue.get("key", "")
+        fields = issue.get("fields") or {}
+
+        raw_value = fields.get(customer_priority_field_id)
+        customer_priority_map[issue_key] = extract_custom_field_display_value(raw_value)
+
+    updated_df["Priorità cliente"] = (
+        updated_df["Issue"]
+        .map(customer_priority_map)
+        .fillna("")
+    )
+
+    updated_df["Priority"] = updated_df["Priorità cliente"]
+
+    return updated_df
+
 # ======================
 # LOAD DATA
 # ======================
@@ -207,6 +309,12 @@ try:
             jira_api_token,
         )
 
+        customer_priority_field_id = cached_detect_customer_priority_field(
+            jira_domain,
+            jira_email,
+            jira_api_token,
+        )
+
     with st.spinner("Caricamento issue Jira..."):
         issues = cached_search_issues(
             jira_domain,
@@ -214,6 +322,7 @@ try:
             jira_api_token,
             default_jql,
             epic_link_field_id,
+            customer_priority_field_id,
         )
 
 except Exception as exc:
@@ -236,11 +345,25 @@ df = build_issues_dataframe(
 )
 
 df = add_estimates_to_issue_dataframe(df, issues)
+
+df = add_customer_priority_to_issue_dataframe(
+    issue_df=df,
+    issues=issues,
+    customer_priority_field_id=customer_priority_field_id,
+)
+
 df = add_issue_urls(df, jira_domain)
 
 if df.empty:
     st.info("Nessun dato disponibile.")
     st.stop()
+
+if not customer_priority_field_id:
+    st.warning(
+        "Campo custom **Priorità cliente** non trovato su Jira. "
+        "Il filtro e il grafico priorità potrebbero non usare il campo corretto. "
+        "Verifica il nome esatto del campo custom in Jira."
+    )
 
 # ======================
 # FILTRI
@@ -275,19 +398,19 @@ selected_issue_types = st.sidebar.multiselect(
 priority_options = sorted(
     df["Priority"]
     .fillna("")
-    .replace("", "Nessuna priorità")
+    .replace("", "Nessuna priorità cliente")
     .unique()
 )
 
 selected_priorities_ui = st.sidebar.multiselect(
-    "Priorità",
+    "Priorità cliente",
     options=priority_options,
     default=[],
     key="filter_priorities",
 )
 
 selected_priorities = [
-    "" if priority == "Nessuna priorità" else priority
+    "" if priority == "Nessuna priorità cliente" else priority
     for priority in selected_priorities_ui
 ]
 
