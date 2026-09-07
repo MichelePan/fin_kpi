@@ -22,35 +22,13 @@ EXCLUDED_ISSUE_TYPES = {
 
 OPENING_STATUSES = {
     "DA FARE",
-    "TO DO",
-    "TODO",
-    "BACKLOG",
-    "APERTO",
-    "APERTA",
-    "OPEN",
-    "NEW",
-    "NUOVO",
-    "NUOVA",
 }
 
 EXECUTION_STATUSES = {
     "ANALISI",
     "ANALISI PRELIMINARE",
     "IN CORSO",
-    "IN PROGRESS",
-    "IN LAVORAZIONE",
-    "LAVORAZIONE",
-    "SVILUPPO",
-    "DEVELOPMENT",
-    "IMPLEMENTAZIONE",
-    "IN IMPLEMENTAZIONE",
-    "TEST",
-    "IN TEST",
-    "REVIEW",
-    "IN REVIEW",
     "IN REVISIONE/TEST",
-    "VALIDAZIONE",
-    "IN VALIDAZIONE",
 }
 
 EXCLUDED_STATUSES = {
@@ -61,26 +39,10 @@ EXCLUDED_STATUSES = {
 CLOSING_STATUSES = {
     "DONE",
     "CHIUSO",
-    "CHIUSA",
-    "CLOSED",
-    "RESOLVED",
-    "RISOLTO",
-    "RISOLTA",
-    "COMPLETATO",
-    "COMPLETATA",
-    "COMPLETED",
-    "FATTO",
-    "RILASCIATO",
-    "RILASCIATA",
-    "RELEASED",
     "VERBALE CHIUSO",
+    "FATTO",
     "TICKET FIL NON CHIUSO",
     "ANNULLATO",
-    "ANNULLATA",
-    "CANCELLED",
-    "CANCELED",
-    "SCARTATO",
-    "SCARTATA",
 }
 
 WORKING_HOURS_PER_DAY = 8
@@ -268,39 +230,10 @@ def extract_status_events(changelog: list[dict]) -> list[dict]:
 
     return events
 
-def get_created_timestamp_from_issue(issue_info: dict):
-    possible_keys = [
-        "Created",
-        "created",
-        "Data creazione",
-    ]
-
-    for key in possible_keys:
-        if key not in issue_info:
-            continue
-
-        value = issue_info.get(key)
-
-        if value is None or value == "":
-            continue
-
-        parsed_value = pd.to_datetime(
-            value,
-            utc=True,
-            errors="coerce",
-        )
-
-        if not pd.isna(parsed_value):
-            return parsed_value
-
-    return pd.NaT
-
-def find_start_event(events: list[dict], issue_info: dict):
+def find_start_event(events: list[dict]):
     """
-    Strategia robusta:
-    1. cerca apertura → esecuzione;
-    2. se non trova, cerca qualunque ingresso in stato di esecuzione;
-    3. se non trova, usa Created come fallback.
+    Cerca la prima transizione da uno stato di apertura
+    verso uno stato di esecuzione.
     """
 
     for event in events:
@@ -308,39 +241,16 @@ def find_start_event(events: list[dict], issue_info: dict):
         to_status = event.get("ToStatusNormalized", "")
 
         if from_status in OPENING_STATUSES and to_status in EXECUTION_STATUSES:
-            return {
-                "Timestamp": event["Timestamp"],
-                "ToStatusNormalized": to_status,
-                "ToStatus": event.get("ToStatus", ""),
-                "Source": "transizione apertura → esecuzione",
-            }
-
-    for event in events:
-        to_status = event.get("ToStatusNormalized", "")
-
-        if to_status in EXECUTION_STATUSES:
-            return {
-                "Timestamp": event["Timestamp"],
-                "ToStatusNormalized": to_status,
-                "ToStatus": event.get("ToStatus", ""),
-                "Source": "prima transizione verso stato di esecuzione",
-            }
-
-    created_ts = get_created_timestamp_from_issue(issue_info)
-
-    if not pd.isna(created_ts):
-        current_status = normalize_status(issue_info.get("Stato", ""))
-
-        return {
-            "Timestamp": created_ts,
-            "ToStatusNormalized": current_status,
-            "ToStatus": issue_info.get("Stato", ""),
-            "Source": "fallback Created",
-        }
+            return event
 
     return None
 
 def get_effective_closing_statuses(issue_info: dict) -> set[str]:
+    """
+    Usa gli stati di chiusura configurati e aggiunge anche lo stato corrente
+    del ticket se il ticket risulta completato.
+    """
+
     effective_closing_statuses = set(CLOSING_STATUSES)
 
     if is_completed_issue(issue_info):
@@ -479,7 +389,6 @@ def compute_resolution_time_for_issue(
         "Data inizio lavorazione": pd.NaT,
         "Data fine lavorazione": pd.NaT,
         "Stato fine": "",
-        "Origine inizio": "",
         "Tempo lordo giorni": None,
         "Tempo lordo ore": None,
         "Tempo escluso giorni": None,
@@ -504,10 +413,10 @@ def compute_resolution_time_for_issue(
         result["Esito"] = "Changelog stato non disponibile"
         return result
 
-    start_event = find_start_event(events, issue_info)
+    start_event = find_start_event(events)
 
     if start_event is None:
-        result["Esito"] = "Inizio lavorazione non trovato"
+        result["Esito"] = "Transizione apertura → esecuzione non trovata"
         return result
 
     start_ts = start_event["Timestamp"]
@@ -534,7 +443,6 @@ def compute_resolution_time_for_issue(
             end_source = "resolutiondate"
 
     result["Data inizio lavorazione"] = start_ts
-    result["Origine inizio"] = start_event.get("Source", "")
 
     if pd.isna(end_ts):
         result["Esito"] = "Transizione verso stato di chiusura non trovata"
@@ -574,6 +482,10 @@ def compute_resolution_time_for_issue(
     return result
 
 def filter_completed_non_epic_issues(issue_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Considera tutti i ticket completati, escludendo solo le Epic.
+    """
+
     if issue_df.empty:
         return issue_df.copy()
 
@@ -609,7 +521,6 @@ def build_resolution_time_dataframe(
         "Data inizio lavorazione",
         "Data fine lavorazione",
         "Stato fine",
-        "Origine inizio",
         "Tempo lordo giorni",
         "Tempo lordo ore",
         "Tempo escluso giorni",
@@ -662,7 +573,6 @@ def build_resolution_time_dataframe(
                 "Data inizio lavorazione": pd.NaT,
                 "Data fine lavorazione": pd.NaT,
                 "Stato fine": "",
-                "Origine inizio": "",
                 "Tempo lordo giorni": None,
                 "Tempo lordo ore": None,
                 "Tempo escluso giorni": None,
@@ -757,10 +667,10 @@ def create_resolution_time_excel_export(resolution_df: pd.DataFrame):
         worksheet.set_column("C:E", 18)
         worksheet.set_column("F:G", 26)
         worksheet.set_column("H:I", 22, datetime_format)
-        worksheet.set_column("J:K", 24)
-        worksheet.set_column("L:Q", 18, number_format)
-        worksheet.set_column("R:R", 46)
-        worksheet.set_column("S:S", 60)
+        worksheet.set_column("J:J", 18)
+        worksheet.set_column("K:P", 18, number_format)
+        worksheet.set_column("Q:Q", 46)
+        worksheet.set_column("R:R", 60)
 
     output.seek(0)
 
@@ -781,9 +691,8 @@ def render_resolution_time_section(
     st.caption(
         "Il tempo viene calcolato sui ticket completati, escludendo le Epic. "
         "Il calcolo parte dalla prima transizione da uno stato di apertura "
-        "a uno stato di esecuzione. Se questa non viene trovata, usa la prima "
-        "transizione verso uno stato di esecuzione; come ultima alternativa usa "
-        "la data di creazione del ticket. "
+        "a uno stato di esecuzione, ad esempio **Da fare → ANALISI** oppure "
+        "**Da fare → IN CORSO**. "
         "Il tempo trascorso negli stati **ON HOLD TEMP** e **BLOCCATO** "
         "viene escluso dal calcolo netto. "
         "I giorni mostrati sono **giorni lavorativi equivalenti da 8 ore**, "
@@ -1005,7 +914,6 @@ def render_resolution_time_section(
         "Data inizio lavorazione",
         "Data fine lavorazione",
         "Stato fine",
-        "Origine inizio",
         "Tempo lordo giorni",
         "Tempo escluso giorni",
         "Tempo netto giorni",
