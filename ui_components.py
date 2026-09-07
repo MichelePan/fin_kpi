@@ -40,7 +40,7 @@ STATUS_COLOR_GROUPS = {
 STATUS_COLOR_MAP = {
     "Da fare": "#7DD3FC",
     "In lavorazione": "#2563EB",
-    "Chiusi": "#ECFDF3",
+    "Chiusi": "#97f7aa",
     "Altro": "#94A3B8",
 }
 
@@ -52,7 +52,7 @@ STATUS_CATEGORY_COLOR_GROUPS = {
 
 PEOPLE_STATUS_COLOR_MAP = {
     "Aperti": "#7DD3FC",
-    "Completati": "#ECFDF3",
+    "Completati": "#97f7aa",
 }
 
 def normalize_issue_type(value):
