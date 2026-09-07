@@ -32,27 +32,27 @@ STATUS_COLOR_GROUPS = {
     "ON HOLD TEMP": "In lavorazione",
     "IN REVISIONE/TEST": "In lavorazione",
     "BLOCCATO": "In lavorazione",
-    "ANNULLATO": "Chiusura",
-    "TICKET FIL NON CHIUSO": "Chiusura",
-    "VERBALE CHIUSO": "Chiusura",
+    "ANNULLATO": "Chiusi",
+    "TICKET FIL NON CHIUSO": "Chiusi",
+    "VERBALE CHIUSO": "Chiusi",
 }
 
 STATUS_COLOR_MAP = {
     "Da fare": "#7DD3FC",
     "In lavorazione": "#2563EB",
-    "Chiusura": "#16A34A",
+    "Chiusi": "#ECFDF3",
     "Altro": "#94A3B8",
 }
 
 STATUS_CATEGORY_COLOR_GROUPS = {
     "TO DO": "Da fare",
     "IN PROGRESS": "In lavorazione",
-    "DONE": "Chiusura",
+    "DONE": "Chiusi",
 }
 
 PEOPLE_STATUS_COLOR_MAP = {
     "Aperti": "#7DD3FC",
-    "Completati": "#2563EB",
+    "Completati": "#ECFDF3",
 }
 
 def normalize_issue_type(value):
