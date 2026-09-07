@@ -947,11 +947,11 @@ def render_resolution_time_section(
     st.subheader("Tempi di risoluzione")
 
     st.caption(
-        "Il tempo viene calcolato sui ticket completati, escludendo le Epic. "
+        "Il tempo viene calcolato sui ticket completati. "
         "Il calcolo parte dalla prima transizione da uno stato di apertura "
         "a uno stato di esecuzione, ad esempio **Da fare → ANALISI** oppure "
         "**Da fare → IN CORSO**. "
-        "Il tempo trascorso negli stati **ON HOLD TEMP** e **BLOCCATO** "
+        "Il tempo trascorso nello stato **BLOCCATO** "
         "viene escluso dal calcolo netto. "
         "I giorni mostrati sono **giorni lavorativi equivalenti da 8 ore**, "
         "non giorni solari."
