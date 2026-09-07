@@ -8,16 +8,48 @@ import streamlit as st
 from requests.auth import HTTPBasicAuth
 
 # ======================
+# CONFIG ISSUE TYPE
+# ======================
+
+TASK_BUG_TYPES = {
+    "TASK",
+    "BUG",
+}
+
+# ======================
 # CONFIG STATI
 # ======================
 
-START_FROM_STATUSES = {
+OPENING_STATUSES = {
     "DA FARE",
     "TO DO",
+    "TODO",
+    "BACKLOG",
+    "APERTO",
+    "APERTA",
+    "OPEN",
+    "NEW",
+    "NUOVO",
+    "NUOVA",
 }
 
-START_TO_STATUSES = {
+EXECUTION_STATUSES = {
+    "ANALISI",
     "ANALISI PRELIMINARE",
+    "IN CORSO",
+    "IN PROGRESS",
+    "IN LAVORAZIONE",
+    "LAVORAZIONE",
+    "SVILUPPO",
+    "DEVELOPMENT",
+    "IMPLEMENTAZIONE",
+    "IN IMPLEMENTAZIONE",
+    "TEST",
+    "IN TEST",
+    "REVIEW",
+    "IN REVIEW",
+    "VALIDAZIONE",
+    "IN VALIDAZIONE",
 }
 
 EXCLUDED_STATUSES = {
@@ -35,15 +67,16 @@ CLOSING_STATUSES = {
     "RISOLTA",
     "COMPLETATO",
     "COMPLETATA",
+    "COMPLETED",
     "RILASCIATO",
     "RILASCIATA",
+    "RELEASED",
     "ANNULLATO",
     "ANNULLATA",
-}
-
-TASK_BUG_TYPES = {
-    "TASK",
-    "BUG",
+    "CANCELLED",
+    "CANCELED",
+    "SCARTATO",
+    "SCARTATA",
 }
 
 # ======================
@@ -84,8 +117,27 @@ def normalize_status(value) -> str:
 def is_task_or_bug(issue_type) -> bool:
     return normalize_issue_type(issue_type) in TASK_BUG_TYPES
 
+def is_opening_status(status) -> bool:
+    return normalize_status(status) in OPENING_STATUSES
+
+def is_execution_status(status) -> bool:
+    return normalize_status(status) in EXECUTION_STATUSES
+
 def is_closing_status(status) -> bool:
     return normalize_status(status) in CLOSING_STATUSES
+
+def is_completed_issue(issue_info: dict) -> bool:
+    done_value = issue_info.get("Done", False)
+
+    if bool(done_value) is True:
+        return True
+
+    current_status = issue_info.get("Stato", "")
+
+    if is_closing_status(current_status):
+        return True
+
+    return False
 
 # ======================
 # JIRA API
@@ -205,16 +257,28 @@ def find_start_event(events: list[dict]):
         to_status = event.get("ToStatusNormalized", "")
 
         if (
-            from_status in START_FROM_STATUSES
-            and to_status in START_TO_STATUSES
+            from_status in OPENING_STATUSES
+            and to_status in EXECUTION_STATUSES
         ):
             return event
 
     return None
 
+def get_effective_closing_statuses(issue_info: dict) -> set[str]:
+    effective_closing_statuses = set(CLOSING_STATUSES)
+
+    if is_completed_issue(issue_info):
+        current_status = normalize_status(issue_info.get("Stato", ""))
+
+        if current_status:
+            effective_closing_statuses.add(current_status)
+
+    return effective_closing_statuses
+
 def find_end_and_excluded_time(
     events: list[dict],
     start_event: dict,
+    issue_info: dict,
 ):
     start_ts = start_event["Timestamp"]
 
@@ -224,6 +288,8 @@ def find_end_and_excluded_time(
     end_ts = pd.NaT
     end_status = ""
     excluded_seconds = 0.0
+
+    effective_closing_statuses = get_effective_closing_statuses(issue_info)
 
     events_after_start = [
         event
@@ -243,7 +309,7 @@ def find_end_and_excluded_time(
 
         to_status = event.get("ToStatusNormalized", "")
 
-        if to_status in CLOSING_STATUSES:
+        if to_status in effective_closing_statuses:
             end_ts = event_ts
             end_status = event.get("ToStatus", "")
             break
@@ -252,6 +318,69 @@ def find_end_and_excluded_time(
         previous_ts = event_ts
 
     return end_ts, end_status, excluded_seconds
+
+def get_resolution_date_from_issue(issue_info: dict):
+    possible_keys = [
+        "ResolutionDate",
+        "Data risoluzione",
+        "resolutiondate",
+    ]
+
+    for key in possible_keys:
+        if key not in issue_info:
+            continue
+
+        value = issue_info.get(key)
+
+        if value is None or value == "":
+            continue
+
+        parsed_value = pd.to_datetime(
+            value,
+            utc=True,
+            errors="coerce",
+        )
+
+        if not pd.isna(parsed_value):
+            return parsed_value
+
+    return pd.NaT
+
+def estimate_excluded_time_until_end(
+    events: list[dict],
+    start_event: dict,
+    end_ts,
+):
+    start_ts = start_event["Timestamp"]
+
+    current_status = start_event.get("ToStatusNormalized", "")
+    previous_ts = start_ts
+    excluded_seconds = 0.0
+
+    events_after_start = [
+        event
+        for event in events
+        if event["Timestamp"] > start_ts and event["Timestamp"] <= end_ts
+    ]
+
+    for event in events_after_start:
+        event_ts = event["Timestamp"]
+
+        if event_ts < previous_ts:
+            continue
+
+        if current_status in EXCLUDED_STATUSES:
+            interval_seconds = (event_ts - previous_ts).total_seconds()
+            excluded_seconds += max(interval_seconds, 0)
+
+        current_status = event.get("ToStatusNormalized", "")
+        previous_ts = event_ts
+
+    if current_status in EXCLUDED_STATUSES and end_ts > previous_ts:
+        interval_seconds = (end_ts - previous_ts).total_seconds()
+        excluded_seconds += max(interval_seconds, 0)
+
+    return excluded_seconds
 
 # ======================
 # CALCOLO TEMPI
@@ -288,8 +417,8 @@ def compute_resolution_time_for_issue(
         result["Esito"] = "Escluso: issue type non Task/Bug"
         return result
 
-    if not is_closing_status(issue_info.get("Stato", "")):
-        result["Esito"] = "Escluso: ticket non in stato di chiusura"
+    if not is_completed_issue(issue_info):
+        result["Esito"] = "Escluso: ticket non completato"
         return result
 
     events = extract_status_events(changelog)
@@ -301,7 +430,7 @@ def compute_resolution_time_for_issue(
     start_event = find_start_event(events)
 
     if start_event is None:
-        result["Esito"] = "Transizione Da fare → ANALISI PRELIMINARE non trovata"
+        result["Esito"] = "Transizione apertura → esecuzione non trovata"
         return result
 
     start_ts = start_event["Timestamp"]
@@ -309,7 +438,23 @@ def compute_resolution_time_for_issue(
     end_ts, end_status, excluded_seconds = find_end_and_excluded_time(
         events=events,
         start_event=start_event,
+        issue_info=issue_info,
     )
+
+    end_source = "transizione"
+
+    if pd.isna(end_ts):
+        resolution_date = get_resolution_date_from_issue(issue_info)
+
+        if not pd.isna(resolution_date):
+            end_ts = resolution_date
+            end_status = issue_info.get("Stato", "")
+            excluded_seconds = estimate_excluded_time_until_end(
+                events=events,
+                start_event=start_event,
+                end_ts=end_ts,
+            )
+            end_source = "resolutiondate"
 
     result["Data inizio lavorazione"] = start_ts
 
@@ -339,11 +484,14 @@ def compute_resolution_time_for_issue(
     result["Tempo netto ore"] = round(net_seconds / 3600, 2)
     result["Tempo netto giorni"] = round(net_seconds / 86400, 2)
 
-    result["Esito"] = "Calcolato"
+    if end_source == "resolutiondate":
+        result["Esito"] = "Calcolato tramite resolutiondate"
+    else:
+        result["Esito"] = "Calcolato"
 
     return result
 
-def filter_closed_task_bug_issues(issue_df: pd.DataFrame) -> pd.DataFrame:
+def filter_completed_task_bug_issues(issue_df: pd.DataFrame) -> pd.DataFrame:
     if issue_df.empty:
         return issue_df.copy()
 
@@ -354,7 +502,10 @@ def filter_closed_task_bug_issues(issue_df: pd.DataFrame) -> pd.DataFrame:
     ]
 
     filtered_df = filtered_df[
-        filtered_df["Stato"].apply(is_closing_status)
+        filtered_df.apply(
+            lambda row: is_completed_issue(row.to_dict()),
+            axis=1,
+        )
     ]
 
     return filtered_df.copy()
@@ -389,14 +540,14 @@ def build_resolution_time_dataframe(
     if issue_df.empty:
         return pd.DataFrame(columns=columns)
 
-    closed_task_bug_df = filter_closed_task_bug_issues(issue_df)
+    completed_task_bug_df = filter_completed_task_bug_issues(issue_df)
 
-    if closed_task_bug_df.empty:
+    if completed_task_bug_df.empty:
         return pd.DataFrame(columns=columns)
 
     rows = []
 
-    issue_records = closed_task_bug_df.to_dict(orient="records")
+    issue_records = completed_task_bug_df.to_dict(orient="records")
     total_issues = len(issue_records)
 
     progress_text = st.empty()
@@ -544,9 +695,10 @@ def render_resolution_time_section(
     st.subheader("Tempi di risoluzione")
 
     st.caption(
-        "Il tempo viene calcolato solo sui **Task/Bug già in stato di chiusura**. "
-        "Il calcolo parte dalla transizione **Da fare → ANALISI PRELIMINARE** "
-        "e termina alla prima transizione verso uno stato di chiusura. "
+        "Il tempo viene calcolato solo sui **Task/Bug completati**. "
+        "Il calcolo parte dalla prima transizione da uno stato di apertura "
+        "a uno stato di esecuzione, ad esempio **Da fare → ANALISI** oppure "
+        "**Da fare → IN CORSO**. "
         "Il tempo trascorso negli stati **ON HOLD TEMP** e **BLOCCATO** "
         "viene escluso dal calcolo netto."
     )
@@ -555,26 +707,26 @@ def render_resolution_time_section(
         st.info("Nessuna issue disponibile per i filtri selezionati.")
         return
 
-    closed_task_bug_df = filter_closed_task_bug_issues(issue_df)
+    completed_task_bug_df = filter_completed_task_bug_issues(issue_df)
 
-    if closed_task_bug_df.empty:
+    if completed_task_bug_df.empty:
         st.info(
-            "Nessun Task/Bug in stato di chiusura disponibile per il calcolo "
+            "Nessun Task/Bug completato disponibile per il calcolo "
             "dei tempi di risoluzione."
         )
         return
 
     total_visible_issues = len(issue_df)
-    total_closed_task_bug = len(closed_task_bug_df)
+    total_completed_task_bug = len(completed_task_bug_df)
 
     st.caption(
         f"Ticket nel perimetro filtrato: **{total_visible_issues}** · "
-        f"Task/Bug chiusi analizzati: **{total_closed_task_bug}**"
+        f"Task/Bug completati analizzati: **{total_completed_task_bug}**"
     )
 
     issue_signature = "|".join(
         sorted(
-            closed_task_bug_df["Issue"]
+            completed_task_bug_df["Issue"]
             .dropna()
             .drop_duplicates()
             .astype(str)
@@ -601,7 +753,7 @@ def render_resolution_time_section(
         st.session_state["resolution_time_loaded"] = True
 
         resolution_df = build_resolution_time_dataframe(
-            issue_df=closed_task_bug_df,
+            issue_df=completed_task_bug_df,
             jira_domain=jira_domain,
             jira_email=jira_email,
             jira_api_token=jira_api_token,
@@ -612,7 +764,7 @@ def render_resolution_time_section(
     if not st.session_state.get("resolution_time_loaded", False):
         st.info(
             "Premi **Calcola / aggiorna tempi di risoluzione** per recuperare "
-            "la changelog Jira solo dei Task/Bug già chiusi e calcolare i tempi."
+            "la changelog Jira solo dei Task/Bug completati e calcolare i tempi."
         )
         return
 
@@ -623,7 +775,12 @@ def render_resolution_time_section(
         return
 
     calculated_df = resolution_df[
-        resolution_df["Esito"] == "Calcolato"
+        resolution_df["Esito"].isin(
+            [
+                "Calcolato",
+                "Calcolato tramite resolutiondate",
+            ]
+        )
     ].copy()
 
     total_rows = len(resolution_df)
@@ -660,7 +817,7 @@ def render_resolution_time_section(
     c5, c6, c7, c8 = st.columns(4)
 
     c5.metric("Mediana risoluzione", f"{median_days} giorni")
-    c6.metric("Task/Bug chiusi analizzati", total_rows)
+    c6.metric("Task/Bug completati analizzati", total_rows)
 
     if not calculated_df.empty:
         c7.metric(
