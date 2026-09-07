@@ -25,6 +25,25 @@ STATUS_ORDER_MAP = {
     for index, status in enumerate(STATUS_ORDER)
 }
 
+STATUS_COLOR_GROUPS = {
+    "DA FARE": "Da fare",
+    "ANALISI": "In lavorazione",
+    "IN CORSO": "In lavorazione",
+    "ON HOLD TEMP": "In lavorazione",
+    "IN REVISIONE/TEST": "In lavorazione",
+    "BLOCCATO": "In lavorazione",
+    "ANNULLATO": "Chiusura",
+    "TICKET FIL NON CHIUSO": "Chiusura",
+    "VERBALE CHIUSO": "Chiusura",
+}
+
+STATUS_COLOR_MAP = {
+    "Da fare": "#7DD3FC",
+    "In lavorazione": "#2563EB",
+    "Chiusura": "#16A34A",
+    "Altro": "#94A3B8",
+}
+
 def normalize_issue_type(value):
     if value is None:
         return ""
@@ -41,6 +60,11 @@ def get_status_sort_order(status):
     normalized_status = normalize_status(status)
 
     return STATUS_ORDER_MAP.get(normalized_status, 999)
+
+def get_status_color_group(status):
+    normalized_status = normalize_status(status)
+
+    return STATUS_COLOR_GROUPS.get(normalized_status, "Altro")
 
 def filter_task_bug(df: pd.DataFrame):
     if df.empty or "IssueType" not in df.columns:
@@ -129,7 +153,7 @@ def render_kpis(df: pd.DataFrame):
 
     with c1:
         render_metric_card(
-            label="Task/Bug Totali",
+            label="Task/Bug",
             value=task_bug_count,
         )
 
@@ -202,21 +226,25 @@ def render_status_panel(df: pd.DataFrame, key_suffix: str = "default"):
         .reset_index(drop=True)
     )
 
+    chart_df = status_df.copy()
+    chart_df["Raggruppamento"] = chart_df["Stato"].apply(get_status_color_group)
+
     ordered_statuses = status_df["Stato"].astype(str).tolist()
 
     fig = px.bar(
-        status_df,
+        chart_df,
         x="Stato",
         y="Task/Bug",
-        color="StatusCategory",
+        color="Raggruppamento",
         text="Task/Bug",
         title="Distribuzione Task/Bug per stato",
+        color_discrete_map=STATUS_COLOR_MAP,
     )
 
     fig.update_layout(
         xaxis_title="Stato",
         yaxis_title="Numero Task/Bug",
-        legend_title="Categoria",
+        legend_title="",
     )
 
     fig.update_xaxes(
@@ -224,7 +252,10 @@ def render_status_panel(df: pd.DataFrame, key_suffix: str = "default"):
         categoryarray=ordered_statuses,
     )
 
-    fig.update_traces(textposition="outside")
+    fig.update_traces(
+        textposition="outside",
+        marker_line_width=0,
+    )
 
     st.plotly_chart(
         fig,
@@ -332,6 +363,10 @@ def render_epic_panel(df: pd.DataFrame, key_suffix: str = "default"):
         y=["Aperti", "Completati"],
         title="Task/Bug aperti e completati per Epic",
         barmode="stack",
+        color_discrete_map={
+            "Aperti": "#2563EB",
+            "Completati": "#16A34A",
+        },
     )
 
     fig.update_layout(
@@ -398,6 +433,10 @@ def render_assignee_panel(df: pd.DataFrame, key_suffix: str = "default"):
         y=["Aperti", "Completati"],
         title="Task/Bug per assegnatario",
         barmode="stack",
+        color_discrete_map={
+            "Aperti": "#2563EB",
+            "Completati": "#16A34A",
+        },
     )
 
     fig.update_layout(
@@ -454,6 +493,7 @@ def render_priority_panel(df: pd.DataFrame, key_suffix: str = "default"):
         y="Task/Bug",
         text="Task/Bug",
         title="Distribuzione Task/Bug per priorità",
+        color_discrete_sequence=["#2563EB"],
     )
 
     fig.update_layout(
