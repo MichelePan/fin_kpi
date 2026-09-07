@@ -13,7 +13,7 @@ from requests.auth import HTTPBasicAuth
 
 TASK_BUG_TYPES = {
     "TASK",
-    "BUG",
+    "BUG"
 }
 
 # ======================
@@ -22,34 +22,15 @@ TASK_BUG_TYPES = {
 
 OPENING_STATUSES = {
     "DA FARE",
-    "TO DO",
-    "TODO",
-    "BACKLOG",
-    "APERTO",
-    "APERTA",
-    "OPEN",
-    "NEW",
-    "NUOVO",
-    "NUOVA",
+    "Da fare"
 }
 
 EXECUTION_STATUSES = {
     "ANALISI",
     "ANALISI PRELIMINARE",
     "IN CORSO",
-    "IN PROGRESS",
-    "IN LAVORAZIONE",
-    "LAVORAZIONE",
-    "SVILUPPO",
-    "DEVELOPMENT",
-    "IMPLEMENTAZIONE",
-    "IN IMPLEMENTAZIONE",
-    "TEST",
-    "IN TEST",
-    "REVIEW",
-    "IN REVIEW",
-    "VALIDAZIONE",
-    "IN VALIDAZIONE",
+    "Analisi",
+    "In revisione/Test",
 }
 
 EXCLUDED_STATUSES = {
@@ -60,23 +41,10 @@ EXCLUDED_STATUSES = {
 CLOSING_STATUSES = {
     "DONE",
     "CHIUSO",
-    "CHIUSA",
-    "CLOSED",
-    "RESOLVED",
-    "RISOLTO",
-    "RISOLTA",
-    "COMPLETATO",
-    "COMPLETATA",
-    "COMPLETED",
-    "RILASCIATO",
-    "RILASCIATA",
-    "RELEASED",
-    "ANNULLATO",
-    "ANNULLATA",
-    "CANCELLED",
-    "CANCELED",
-    "SCARTATO",
-    "SCARTATA",
+    "VERBALE CHIUSO",
+    "FATTO",
+    "TICKET FIL NON CHIUSO",
+    "ANNULLATO"
 }
 
 # ======================
