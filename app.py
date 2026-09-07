@@ -12,7 +12,6 @@ from ui_components import (
     render_kpis,
     render_status_panel,
     render_status_category_panel,
-    render_epic_panel,
     render_assignee_panel,
     render_priority_panel,
     render_age_panel,
@@ -480,10 +479,9 @@ render_kpis(df_view)
 
 st.divider()
 
-tab_overview, tab_epic, tab_people, tab_resolution_time = st.tabs(
+tab_overview, tab_people, tab_resolution_time = st.tabs(
     [
         "Overview",
-        "Epic",
         "Persone",
         "Tempi risoluzione",
     ]
@@ -505,9 +503,6 @@ with tab_overview:
     st.divider()
 
     render_age_panel(df_view, key_suffix="overview")
-
-with tab_epic:
-    render_epic_panel(df_view, key_suffix="epic")
 
 with tab_people:
     render_assignee_panel(df_view, key_suffix="people")
