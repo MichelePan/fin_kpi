@@ -143,6 +143,8 @@ def render_kpis(df: pd.DataFrame):
         render_metric_card(
             label="Task/Bug bloccati",
             value=blocked_task_bug,
+            color="#B54708",
+            background="#FFFAEB",
         )
 
 def render_status_panel(df: pd.DataFrame, key_suffix: str = "default"):
