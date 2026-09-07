@@ -118,6 +118,21 @@ def seconds_to_hours(seconds: float) -> float:
 def hours_to_working_days(hours: float) -> float:
     return round(hours / WORKING_HOURS_PER_DAY, 2)
 
+def build_epic_label(issue_info: dict) -> str:
+    epic_name = str(issue_info.get("EpicName", "") or "").strip()
+    epic_key = str(issue_info.get("EpicKey", "") or "").strip()
+
+    if epic_name and epic_key:
+        return f"{epic_key} - {epic_name}"
+
+    if epic_name:
+        return epic_name
+
+    if epic_key:
+        return epic_key
+
+    return "Senza Epic"
+
 # ======================
 # JIRA API
 # ======================
@@ -386,6 +401,7 @@ def compute_resolution_time_for_issue(
         "Assignee": issue_info.get("Assignee", ""),
         "EpicKey": issue_info.get("EpicKey", ""),
         "EpicName": issue_info.get("EpicName", ""),
+        "Epic": build_epic_label(issue_info),
         "Data inizio lavorazione": pd.NaT,
         "Data fine lavorazione": pd.NaT,
         "Stato fine": "",
@@ -518,6 +534,7 @@ def build_resolution_time_dataframe(
         "Assignee",
         "EpicKey",
         "EpicName",
+        "Epic",
         "Data inizio lavorazione",
         "Data fine lavorazione",
         "Stato fine",
@@ -570,6 +587,7 @@ def build_resolution_time_dataframe(
                 "Assignee": issue_info.get("Assignee", ""),
                 "EpicKey": issue_info.get("EpicKey", ""),
                 "EpicName": issue_info.get("EpicName", ""),
+                "Epic": build_epic_label(issue_info),
                 "Data inizio lavorazione": pd.NaT,
                 "Data fine lavorazione": pd.NaT,
                 "Stato fine": "",
@@ -632,6 +650,58 @@ def build_resolution_time_dataframe(
     return result_df
 
 # ======================
+# AGGREGAZIONI
+# ======================
+
+def build_epic_resolution_summary(calculated_df: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        "Epic",
+        "Ticket calcolati",
+        "Tempo medio netto giorni",
+        "Tempo mediano netto giorni",
+        "Tempo massimo netto giorni",
+        "Tempo medio netto ore",
+        "Tempo escluso medio giorni",
+    ]
+
+    if calculated_df.empty:
+        return pd.DataFrame(columns=columns)
+
+    summary_df = (
+        calculated_df
+        .groupby("Epic", dropna=False)
+        .agg(
+            **{
+                "Ticket calcolati": ("Issue", "count"),
+                "Tempo medio netto giorni": ("Tempo netto giorni", "mean"),
+                "Tempo mediano netto giorni": ("Tempo netto giorni", "median"),
+                "Tempo massimo netto giorni": ("Tempo netto giorni", "max"),
+                "Tempo medio netto ore": ("Tempo netto ore", "mean"),
+                "Tempo escluso medio giorni": ("Tempo escluso giorni", "mean"),
+            }
+        )
+        .reset_index()
+    )
+
+    numeric_columns = [
+        "Tempo medio netto giorni",
+        "Tempo mediano netto giorni",
+        "Tempo massimo netto giorni",
+        "Tempo medio netto ore",
+        "Tempo escluso medio giorni",
+    ]
+
+    for column in numeric_columns:
+        summary_df[column] = summary_df[column].round(2)
+
+    summary_df = summary_df.sort_values(
+        by=["Tempo medio netto giorni", "Ticket calcolati"],
+        ascending=[False, False],
+    )
+
+    return summary_df[columns]
+
+# ======================
 # EXPORT
 # ======================
 
@@ -678,8 +748,27 @@ def create_resolution_time_excel_export(resolution_df: pd.DataFrame):
             sheet_name="Tempi risoluzione",
         )
 
+        calculated_df = export_df[
+            export_df["Esito"].isin(
+                [
+                    "Calcolato",
+                    "Calcolato tramite resolutiondate",
+                ]
+            )
+        ].copy()
+
+        epic_summary_df = build_epic_resolution_summary(calculated_df)
+
+        if not epic_summary_df.empty:
+            epic_summary_df.to_excel(
+                writer,
+                index=False,
+                sheet_name="Tempi per Epic",
+            )
+
         workbook = writer.book
-        worksheet = writer.sheets["Tempi risoluzione"]
+
+        resolution_sheet = writer.sheets["Tempi risoluzione"]
 
         datetime_format = workbook.add_format(
             {
@@ -693,15 +782,21 @@ def create_resolution_time_excel_export(resolution_df: pd.DataFrame):
             }
         )
 
-        worksheet.set_column("A:A", 14)
-        worksheet.set_column("B:B", 60)
-        worksheet.set_column("C:E", 18)
-        worksheet.set_column("F:G", 26)
-        worksheet.set_column("H:I", 22, datetime_format)
-        worksheet.set_column("J:J", 18)
-        worksheet.set_column("K:P", 18, number_format)
-        worksheet.set_column("Q:Q", 46)
-        worksheet.set_column("R:R", 60)
+        resolution_sheet.set_column("A:A", 14)
+        resolution_sheet.set_column("B:B", 60)
+        resolution_sheet.set_column("C:E", 18)
+        resolution_sheet.set_column("F:H", 28)
+        resolution_sheet.set_column("I:J", 22, datetime_format)
+        resolution_sheet.set_column("K:K", 18)
+        resolution_sheet.set_column("L:Q", 18, number_format)
+        resolution_sheet.set_column("R:R", 46)
+        resolution_sheet.set_column("S:S", 60)
+
+        if not epic_summary_df.empty:
+            epic_sheet = writer.sheets["Tempi per Epic"]
+            epic_sheet.set_column("A:A", 50)
+            epic_sheet.set_column("B:B", 18)
+            epic_sheet.set_column("C:G", 24, number_format)
 
     output.seek(0)
 
@@ -768,6 +863,20 @@ def render_resolution_time_section(
             .sort_values("Ticket completati", ascending=False)
         )
 
+        epic_df = completed_issue_df.copy()
+        epic_df["Epic"] = epic_df.apply(
+            lambda row: build_epic_label(row.to_dict()),
+            axis=1,
+        )
+
+        epic_count_df = (
+            epic_df
+            .groupby("Epic", dropna=False)
+            .size()
+            .reset_index(name="Ticket completati")
+            .sort_values("Ticket completati", ascending=False)
+        )
+
         col1, col2 = st.columns(2)
 
         with col1:
@@ -787,6 +896,14 @@ def render_resolution_time_section(
                 hide_index=True,
                 key="resolution_time_diagnostic_status",
             )
+
+        st.write("Completati per Epic")
+        st.dataframe(
+            epic_count_df,
+            use_container_width=True,
+            hide_index=True,
+            key="resolution_time_diagnostic_epic",
+        )
 
     issue_signature = "|".join(
         sorted(
@@ -899,6 +1016,50 @@ def render_resolution_time_section(
 
     st.divider()
 
+    st.subheader("Tempi medi per Epic")
+
+    if calculated_df.empty:
+        st.info("Nessun ticket calcolato disponibile per il confronto per Epic.")
+    else:
+        epic_summary_df = build_epic_resolution_summary(calculated_df)
+
+        st.caption(
+            "Questa tabella permette di confrontare il tempo medio di risoluzione "
+            "tra le diverse Epic. È utile per distinguere ticket con peso diverso, "
+            "ad esempio Epic AM rispetto a Epic di gestione memoria."
+        )
+
+        st.dataframe(
+            epic_summary_df,
+            use_container_width=True,
+            hide_index=True,
+            key="resolution_time_epic_summary_table",
+            column_config={
+                "Tempo medio netto giorni": st.column_config.NumberColumn(
+                    "Tempo medio netto giorni lav.",
+                    format="%.2f",
+                ),
+                "Tempo mediano netto giorni": st.column_config.NumberColumn(
+                    "Tempo mediano netto giorni lav.",
+                    format="%.2f",
+                ),
+                "Tempo massimo netto giorni": st.column_config.NumberColumn(
+                    "Tempo massimo netto giorni lav.",
+                    format="%.2f",
+                ),
+                "Tempo medio netto ore": st.column_config.NumberColumn(
+                    "Tempo medio netto ore",
+                    format="%.2f",
+                ),
+                "Tempo escluso medio giorni": st.column_config.NumberColumn(
+                    "Tempo escluso medio giorni lav.",
+                    format="%.2f",
+                ),
+            },
+        )
+
+    st.divider()
+
     st.subheader("Esiti calcolo")
 
     esiti_df = (
@@ -942,6 +1103,7 @@ def render_resolution_time_section(
         "Assignee",
         "EpicKey",
         "EpicName",
+        "Epic",
         "Data inizio lavorazione",
         "Data fine lavorazione",
         "Stato fine",
