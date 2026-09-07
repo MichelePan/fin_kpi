@@ -25,10 +25,10 @@ OPENING_STATUSES = {
 }
 
 EXECUTION_STATUSES = {
-    "In corso",
     "Analisi",
-    "In revisione/Test",
-    "ON HOLD TEMP"
+    "In corso",
+    "ON HOLD TEMP",
+    "In revisione/Test"
 }
 
 EXCLUDED_STATUSES = {
