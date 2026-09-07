@@ -8,6 +8,23 @@ TASK_BUG_TYPES = {
     "bug",
 }
 
+STATUS_ORDER = [
+    "Da fare",
+    "Analisi",
+    "In corso",
+    "ON HOLD TEMP",
+    "In revisione/Test",
+    "BLOCCATO",
+    "ANNULLATO",
+    "TICKET FIL NON CHIUSO",
+    "Verbale Chiuso",
+]
+
+STATUS_ORDER_MAP = {
+    status.strip().upper(): index
+    for index, status in enumerate(STATUS_ORDER)
+}
+
 def normalize_issue_type(value):
     if value is None:
         return ""
@@ -19,6 +36,11 @@ def normalize_status(value):
         return ""
 
     return str(value).strip().upper()
+
+def get_status_sort_order(status):
+    normalized_status = normalize_status(status)
+
+    return STATUS_ORDER_MAP.get(normalized_status, 999)
 
 def filter_task_bug(df: pd.DataFrame):
     if df.empty or "IssueType" not in df.columns:
@@ -164,7 +186,19 @@ def render_status_panel(df: pd.DataFrame, key_suffix: str = "default"):
         task_bug_df.groupby(["Stato", "StatusCategory"], dropna=False)
         .size()
         .reset_index(name="Task/Bug")
-        .sort_values("Task/Bug", ascending=False)
+    )
+
+    status_df["__order"] = status_df["Stato"].apply(get_status_sort_order)
+
+    status_df = (
+        status_df
+        .sort_values(
+            by=["__order", "Stato"],
+            ascending=[True, True],
+            kind="mergesort",
+        )
+        .drop(columns=["__order"])
+        .reset_index(drop=True)
     )
 
     fig = px.bar(
@@ -174,6 +208,9 @@ def render_status_panel(df: pd.DataFrame, key_suffix: str = "default"):
         color="StatusCategory",
         text="Task/Bug",
         title="Distribuzione Task/Bug per stato",
+        category_orders={
+            "Stato": status_df["Stato"].tolist(),
+        },
     )
 
     fig.update_layout(
