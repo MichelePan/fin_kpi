@@ -73,6 +73,16 @@ PRIORITY_COLOR_MAP = {
     "Altro": "#94A3B8",
 }
 
+PRIORITY_COMPLEXITY_SCORE = {
+    "Altissima": 5,
+    "Alta": 4,
+    "Media": 3,
+    "Bassa": 2,
+    "Fase 2": 1,
+    NO_PRIORITY_LABEL: 0,
+    "Altro": 0,
+}
+
 def normalize_issue_type(value):
     if value is None:
         return ""
@@ -121,6 +131,11 @@ def get_priority_color_key(priority):
             return priority_value
 
     return "Altro"
+
+def get_priority_complexity_score(priority):
+    color_key = get_priority_color_key(priority)
+
+    return PRIORITY_COMPLEXITY_SCORE.get(color_key, 0)
 
 def filter_task_bug(df: pd.DataFrame):
     if df.empty or "IssueType" not in df.columns:
@@ -548,4 +563,240 @@ def render_priority_panel(df: pd.DataFrame, key_suffix: str = "default"):
         use_container_width=True,
         hide_index=True,
         key=f"priority_panel_table_{key_suffix}",
+    )
+
+def render_priority_monthly_panel(df: pd.DataFrame, key_suffix: str = "default"):
+    st.subheader("Andamento mensile priorità cliente")
+
+    if df.empty:
+        st.info("Nessun dato disponibile.")
+        return
+
+    task_bug_df = filter_task_bug(df)
+
+    if task_bug_df.empty:
+        st.info("Nessun Task o Bug disponibile per i filtri selezionati.")
+        return
+
+    if "Created" not in task_bug_df.columns:
+        st.info("Data di creazione non disponibile per calcolare l'andamento mensile.")
+        return
+
+    monthly_df = task_bug_df.copy()
+
+    monthly_df["Created"] = pd.to_datetime(
+        monthly_df["Created"],
+        errors="coerce",
+    )
+
+    monthly_df = monthly_df.dropna(subset=["Created"])
+
+    if monthly_df.empty:
+        st.info("Nessun Task/Bug con data di creazione disponibile.")
+        return
+
+    monthly_df["Priorità cliente"] = (
+        monthly_df["Priority"]
+        .fillna("")
+        .replace("", NO_PRIORITY_LABEL)
+    )
+
+    monthly_df["Mese"] = (
+        monthly_df["Created"]
+        .dt.to_period("M")
+        .astype(str)
+    )
+
+    monthly_df["Indice complessità"] = monthly_df["Priorità cliente"].apply(
+        get_priority_complexity_score
+    )
+
+    grouped = (
+        monthly_df
+        .groupby(["Mese", "Priorità cliente"], dropna=False)
+        .size()
+        .reset_index(name="Task/Bug")
+    )
+
+    grouped["__priority_order"] = grouped["Priorità cliente"].apply(
+        get_priority_sort_order
+    )
+
+    grouped["__color_key"] = grouped["Priorità cliente"].apply(
+        get_priority_color_key
+    )
+
+    grouped = (
+        grouped
+        .sort_values(
+            by=["Mese", "__priority_order", "Priorità cliente"],
+            ascending=[True, True, True],
+            kind="mergesort",
+        )
+        .reset_index(drop=True)
+    )
+
+    monthly_score_df = (
+        monthly_df
+        .groupby("Mese", dropna=False)
+        .agg(
+            **{
+                "Ticket": ("Issue", "count"),
+                "Indice complessità medio": ("Indice complessità", "mean"),
+                "Ticket Altissima": (
+                    "Priorità cliente",
+                    lambda values: sum(
+                        normalize_priority(value).lower() == "altissima"
+                        for value in values
+                    ),
+                ),
+                "Ticket Alta": (
+                    "Priorità cliente",
+                    lambda values: sum(
+                        normalize_priority(value).lower() == "alta"
+                        for value in values
+                    ),
+                ),
+            }
+        )
+        .reset_index()
+        .sort_values("Mese")
+    )
+
+    monthly_score_df["Indice complessità medio"] = (
+        monthly_score_df["Indice complessità medio"]
+        .round(2)
+    )
+
+    monthly_score_df["% Altissima"] = (
+        monthly_score_df["Ticket Altissima"] / monthly_score_df["Ticket"] * 100
+    ).round(1)
+
+    first_month_score = 0
+    last_month_score = 0
+    score_delta = 0
+
+    if not monthly_score_df.empty:
+        first_month_score = monthly_score_df.iloc[0]["Indice complessità medio"]
+        last_month_score = monthly_score_df.iloc[-1]["Indice complessità medio"]
+        score_delta = round(last_month_score - first_month_score, 2)
+
+    c1, c2, c3, c4 = st.columns(4)
+
+    with c1:
+        render_metric_card(
+            label="Mesi analizzati",
+            value=monthly_score_df["Mese"].nunique(),
+        )
+
+    with c2:
+        render_metric_card(
+            label="Indice complessità ultimo mese",
+            value=last_month_score,
+            color="#2563EB",
+            background="#EFF6FF",
+        )
+
+    with c3:
+        render_metric_card(
+            label="Variazione indice",
+            value=score_delta,
+            color="#B54708" if score_delta > 0 else "#027A48",
+            background="#FFFAEB" if score_delta > 0 else "#ECFDF3",
+        )
+
+    with c4:
+        latest_altissima_percentage = 0
+
+        if not monthly_score_df.empty:
+            latest_altissima_percentage = monthly_score_df.iloc[-1]["% Altissima"]
+
+        render_metric_card(
+            label="% Altissima ultimo mese",
+            value=f"{latest_altissima_percentage}%",
+            color="#DC2626",
+            background="#FEF2F2",
+        )
+
+    st.caption(
+        "Il grafico mostra la distribuzione mensile delle priorità cliente "
+        "sui Task/Bug creati nel periodo filtrato. "
+        "L'indice complessità è calcolato come score indicativo: "
+        "Altissima=5, Alta=4, Media=3, Bassa=2, Fase 2=1."
+    )
+
+    ordered_months = sorted(grouped["Mese"].unique().tolist())
+
+    ordered_priorities = [
+        priority
+        for priority in PRIORITY_ORDER
+        if priority in grouped["Priorità cliente"].unique().tolist()
+    ]
+
+    remaining_priorities = sorted(
+        [
+            priority
+            for priority in grouped["Priorità cliente"].unique().tolist()
+            if priority not in ordered_priorities
+        ]
+    )
+
+    ordered_priorities = ordered_priorities + remaining_priorities
+
+    fig = px.bar(
+        grouped,
+        x="Mese",
+        y="Task/Bug",
+        color="Priorità cliente",
+        text="Task/Bug",
+        title="Distribuzione mensile Task/Bug per priorità cliente",
+        color_discrete_map=PRIORITY_COLOR_MAP,
+        category_orders={
+            "Mese": ordered_months,
+            "Priorità cliente": ordered_priorities,
+        },
+    )
+
+    fig.update_layout(
+        xaxis_title="Mese creazione ticket",
+        yaxis_title="Numero Task/Bug",
+        legend_title="Priorità cliente",
+        barmode="stack",
+    )
+
+    fig.update_traces(
+        textposition="inside",
+        marker_line_width=0,
+    )
+
+    st.plotly_chart(
+        fig,
+        use_container_width=True,
+        key=f"priority_monthly_chart_{key_suffix}",
+    )
+
+    st.dataframe(
+        monthly_score_df,
+        use_container_width=True,
+        hide_index=True,
+        key=f"priority_monthly_score_table_{key_suffix}",
+        column_config={
+            "Indice complessità medio": st.column_config.NumberColumn(
+                "Indice complessità medio",
+                format="%.2f",
+            ),
+            "% Altissima": st.column_config.NumberColumn(
+                "% Altissima",
+                format="%.1f%%",
+            ),
+        },
+    )
+
+    table_df = grouped.drop(columns=["__priority_order", "__color_key"])
+
+    st.dataframe(
+        table_df,
+        use_container_width=True,
+        hide_index=True,
+        key=f"priority_monthly_detail_table_{key_suffix}",
     )
