@@ -529,10 +529,11 @@ render_kpis(df_view)
 
 st.divider()
 
-tab_overview, tab_people, tab_resolution_time = st.tabs(
+tab_overview, tab_people, tab_priority_trend, tab_resolution_time = st.tabs(
     [
         "Overview",
         "Persone",
+        "Andamento priorità",
         "Tempi risoluzione",
     ]
 )
@@ -550,12 +551,11 @@ with tab_overview:
     with col2:
         render_priority_panel(df_view, key_suffix="overview")
 
-    st.divider()
-
-    render_priority_monthly_panel(df_view, key_suffix="overview")
-
 with tab_people:
     render_assignee_panel(df_view, key_suffix="people")
+
+with tab_priority_trend:
+    render_priority_monthly_panel(df_view, key_suffix="priority_trend")
 
 with tab_resolution_time:
     render_resolution_time_section(
