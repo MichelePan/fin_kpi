@@ -7,22 +7,17 @@ TASK_BUG_TYPES = {
     "bug",
 }
 
-STORY_TYPES = {
-    "story",
-    "user story",
-    "storia",
-}
-
-EPIC_TYPES = {
-    "epic",
-    "epica",
-}
-
 def normalize_issue_type(value):
     if value is None:
         return ""
 
     return str(value).strip().lower()
+
+def normalize_status(value):
+    if value is None:
+        return ""
+
+    return str(value).strip().upper()
 
 def filter_task_bug(df: pd.DataFrame):
     if df.empty or "IssueType" not in df.columns:
@@ -34,42 +29,16 @@ def filter_task_bug(df: pd.DataFrame):
         .isin(TASK_BUG_TYPES)
     ].copy()
 
-def filter_stories(df: pd.DataFrame):
-    if df.empty or "IssueType" not in df.columns:
-        return df.copy()
-
-    return df[
-        df["IssueType"]
-        .apply(normalize_issue_type)
-        .isin(STORY_TYPES)
-    ].copy()
-
-def filter_epics(df: pd.DataFrame):
-    if df.empty or "IssueType" not in df.columns:
-        return df.copy()
-
-    return df[
-        df["IssueType"]
-        .apply(normalize_issue_type)
-        .isin(EPIC_TYPES)
-    ].copy()
-
 def render_kpis(df: pd.DataFrame):
     if df.empty:
         st.info("Nessun dato disponibile per i filtri selezionati.")
         return
 
     task_bug_df = filter_task_bug(df)
-    stories_df = filter_stories(df)
-    epics_df = filter_epics(df)
 
     total_issues = len(df)
     task_bug_count = len(task_bug_df)
-    stories_count = len(stories_df)
-    epics_count = len(epics_df)
-
-    classified_count = task_bug_count + stories_count + epics_count
-    other_count = total_issues - classified_count
+    other_issue_types_count = total_issues - task_bug_count
 
     task_bug_done = int(task_bug_df["Done"].sum()) if not task_bug_df.empty else 0
     task_bug_open = task_bug_count - task_bug_done
@@ -81,6 +50,8 @@ def render_kpis(df: pd.DataFrame):
 
     unassigned_task_bug = 0
     assignee_task_bug = 0
+    cancelled_task_bug = 0
+    blocked_task_bug = 0
 
     if not task_bug_df.empty:
         unassigned_task_bug = int(
@@ -94,6 +65,20 @@ def render_kpis(df: pd.DataFrame):
             .nunique()
         )
 
+        cancelled_task_bug = int(
+            task_bug_df["Stato"]
+            .apply(normalize_status)
+            .eq("ANNULLATO")
+            .sum()
+        )
+
+        blocked_task_bug = int(
+            task_bug_df["Stato"]
+            .apply(normalize_status)
+            .eq("BLOCCATO")
+            .sum()
+        )
+
     c1, c2, c3, c4, c5 = st.columns(5)
 
     c1.metric("Task/Bug", task_bug_count)
@@ -104,9 +89,9 @@ def render_kpis(df: pd.DataFrame):
 
     c6, c7, c8, c9, c10 = st.columns(5)
 
-    c6.metric("Storie", stories_count)
-    c7.metric("Epiche", epics_count)
-    c8.metric("Altri tipi", other_count)
+    c6.metric("Task/Bug annullati", cancelled_task_bug)
+    c7.metric("Task/Bug bloccati", blocked_task_bug)
+    c8.metric("Altri issue type", other_issue_types_count)
     c9.metric("Issue totali", total_issues)
     c10.metric("Assegnatari Task/Bug", assignee_task_bug)
 
