@@ -183,7 +183,8 @@ def render_status_panel(df: pd.DataFrame, key_suffix: str = "default"):
         return
 
     status_df = (
-        task_bug_df.groupby(["Stato", "StatusCategory"], dropna=False)
+        task_bug_df
+        .groupby(["Stato", "StatusCategory"], dropna=False)
         .size()
         .reset_index(name="Task/Bug")
     )
@@ -201,6 +202,8 @@ def render_status_panel(df: pd.DataFrame, key_suffix: str = "default"):
         .reset_index(drop=True)
     )
 
+    ordered_statuses = status_df["Stato"].astype(str).tolist()
+
     fig = px.bar(
         status_df,
         x="Stato",
@@ -208,15 +211,17 @@ def render_status_panel(df: pd.DataFrame, key_suffix: str = "default"):
         color="StatusCategory",
         text="Task/Bug",
         title="Distribuzione Task/Bug per stato",
-        category_orders={
-            "Stato": status_df["Stato"].tolist(),
-        },
     )
 
     fig.update_layout(
         xaxis_title="Stato",
         yaxis_title="Numero Task/Bug",
         legend_title="Categoria",
+    )
+
+    fig.update_xaxes(
+        categoryorder="array",
+        categoryarray=ordered_statuses,
     )
 
     fig.update_traces(textposition="outside")
@@ -248,7 +253,8 @@ def render_status_category_panel(df: pd.DataFrame, key_suffix: str = "default"):
         return
 
     category_df = (
-        task_bug_df.groupby("StatusCategory", dropna=False)
+        task_bug_df
+        .groupby("StatusCategory", dropna=False)
         .size()
         .reset_index(name="Task/Bug")
         .sort_values("Task/Bug", ascending=False)
@@ -303,7 +309,8 @@ def render_epic_panel(df: pd.DataFrame, key_suffix: str = "default"):
     ] = "Senza Epic"
 
     grouped = (
-        epic_df.groupby("Epic", dropna=False)
+        epic_df
+        .groupby("Epic", dropna=False)
         .agg(
             TaskBug=("Issue", "count"),
             Completati=("Done", "sum"),
@@ -368,7 +375,8 @@ def render_assignee_panel(df: pd.DataFrame, key_suffix: str = "default"):
     )
 
     grouped = (
-        assignee_df.groupby("Assignee", dropna=False)
+        assignee_df
+        .groupby("Assignee", dropna=False)
         .agg(
             TaskBug=("Issue", "count"),
             Completati=("Done", "sum"),
@@ -433,7 +441,8 @@ def render_priority_panel(df: pd.DataFrame, key_suffix: str = "default"):
     )
 
     grouped = (
-        priority_df.groupby("Priority", dropna=False)
+        priority_df
+        .groupby("Priority", dropna=False)
         .size()
         .reset_index(name="Task/Bug")
         .sort_values("Task/Bug", ascending=False)
@@ -515,220 +524,6 @@ def render_age_panel(df: pd.DataFrame, key_suffix: str = "default"):
         hide_index=True,
         key=f"age_panel_table_{key_suffix}",
         column_config={
-            "Url": st.column_config.LinkColumn("Jira"),
-        },
-    )
-
-def render_worklog_tables(
-    worklog_df: pd.DataFrame,
-    date_from=None,
-    date_to=None,
-    key_suffix: str = "default",
-):
-    if worklog_df.empty:
-        st.info("Nessun worklog trovato nel periodo selezionato.")
-        return
-
-    total_hours = worklog_df["Ore"].sum()
-    users = worklog_df["Utente"].replace("", pd.NA).dropna().nunique()
-    issues = worklog_df["Issue"].replace("", pd.NA).dropna().nunique()
-    days = worklog_df["Data"].dt.date.nunique()
-
-    c1, c2, c3, c4 = st.columns(4)
-
-    c1.metric("Ore totali", f"{total_hours:.2f}")
-    c2.metric("Utenti", users)
-    c3.metric("Issue lavorate", issues)
-    c4.metric("Giorni con worklog", days)
-
-    st.divider()
-
-    st.subheader("Attività lavorate nel periodo")
-
-    detail_df = worklog_df.copy()
-    detail_df["Data"] = detail_df["Data"].dt.strftime("%d/%m/%Y")
-
-    detail_columns = [
-        "Data",
-        "Utente",
-        "Issue",
-        "Summary",
-        "EpicKey",
-        "EpicName",
-        "StimaOre",
-        "Ore Consuntivate",
-        "Stato",
-        "Stima (in ore)",
-    ]
-
-    existing_detail_columns = [
-        column
-        for column in detail_columns
-        if column in detail_df.columns
-    ]
-
-    st.dataframe(
-        detail_df[existing_detail_columns],
-        use_container_width=True,
-        hide_index=True,
-        key=f"worklog_detail_table_{key_suffix}",
-        column_config={
-            "StimaOre": st.column_config.NumberColumn(
-                "StimaOre",
-                format="%.2f",
-            ),
-            "Ore Consuntivate": st.column_config.NumberColumn(
-                "Ore Consuntivate",
-                format="%.2f",
-            ),
-            "Stima (in ore)": st.column_config.NumberColumn(
-                "Stima (in ore)",
-                format="%.2f",
-            ),
-        },
-    )
-
-    st.divider()
-
-    st.subheader("Matrice ore per giorno")
-
-    worked_days = sorted(worklog_df["Data"].dt.date.dropna().unique())
-
-    matrix_df = (
-        worklog_df
-        .pivot_table(
-            index="Utente",
-            columns=worklog_df["Data"].dt.date,
-            values="Ore",
-            aggfunc="sum",
-        )
-        .sort_index()
-    )
-
-    if matrix_df.empty:
-        st.info("Nessun dato disponibile per la matrice ore.")
-        return
-
-    matrix_df = matrix_df.reindex(columns=worked_days)
-    matrix_df = matrix_df.fillna(0)
-
-    matrix_df["Totale"] = matrix_df.sum(axis=1)
-
-    rename_map = {
-        column: pd.to_datetime(column).strftime("%d/%m/%Y")
-        for column in worked_days
-    }
-
-    matrix_df = matrix_df.rename(columns=rename_map)
-    matrix_df = matrix_df.reset_index()
-
-    hour_columns = [rename_map[column] for column in worked_days]
-
-    def highlight_hours(value):
-        if pd.isna(value):
-            return ""
-
-        try:
-            numeric_value = float(value)
-        except Exception:
-            return ""
-
-        if numeric_value == 0 or numeric_value > 8:
-            return (
-                "background-color: #ffd6d6; "
-                "color: #7a0000; "
-                "font-weight: 700;"
-            )
-
-        if 0 < numeric_value < 8:
-            return (
-                "background-color: #fff3b0; "
-                "color: #3d2b00; "
-                "font-weight: 600;"
-            )
-
-        return ""
-
-    formatters = {
-        column: lambda value: "" if pd.isna(value) else f"{value:.2f}"
-        for column in hour_columns + ["Totale"]
-    }
-
-    styled_matrix = (
-        matrix_df
-        .style
-        .format(formatters)
-        .map(
-            highlight_hours,
-            subset=hour_columns,
-        )
-    )
-
-    st.caption(
-        "La matrice mostra solo i giorni in cui è presente almeno un worklog. "
-        "Le celle sono gialle quando l'utente ha segnato più di 0 ore ma meno di 8. "
-        "Le celle sono rosse quando l'utente non ha segnato ore in un giorno in cui altri hanno segnato ore, "
-        "oppure quando ha segnato più di 8 ore."
-    )
-
-    st.dataframe(
-        styled_matrix,
-        use_container_width=True,
-        hide_index=True,
-        key=f"worklog_matrix_table_{key_suffix}",
-    )
-
-def render_detail_table(df: pd.DataFrame, key_suffix: str = "default"):
-    st.subheader("Dettaglio issue")
-
-    if df.empty:
-        st.info("Nessuna issue disponibile.")
-        return
-
-    detail_df = df.copy()
-
-    columns = [
-        "Issue",
-        "Summary",
-        "IssueType",
-        "Stato",
-        "StatusCategory",
-        "Assignee",
-        "Reporter",
-        "Priority",
-        "EpicKey",
-        "EpicName",
-        "Created",
-        "Updated",
-        "DueDate",
-        "ResolutionDate",
-        "DaysOpen",
-        "DaysSinceUpdate",
-        "StimaOre",
-        "Stima (in ore)",
-        "Url",
-    ]
-
-    existing_columns = [
-        column
-        for column in columns
-        if column in detail_df.columns
-    ]
-
-    st.dataframe(
-        detail_df[existing_columns],
-        use_container_width=True,
-        hide_index=True,
-        key=f"detail_table_{key_suffix}",
-        column_config={
-            "StimaOre": st.column_config.NumberColumn(
-                "StimaOre",
-                format="%.2f",
-            ),
-            "Stima (in ore)": st.column_config.NumberColumn(
-                "Stima (in ore)",
-                format="%.2f",
-            ),
             "Url": st.column_config.LinkColumn("Jira"),
         },
     )
