@@ -83,6 +83,21 @@ PRIORITY_COMPLEXITY_SCORE = {
     "Altro": 0,
 }
 
+ITALIAN_MONTH_NAMES = {
+    1: "Gennaio",
+    2: "Febbraio",
+    3: "Marzo",
+    4: "Aprile",
+    5: "Maggio",
+    6: "Giugno",
+    7: "Luglio",
+    8: "Agosto",
+    9: "Settembre",
+    10: "Ottobre",
+    11: "Novembre",
+    12: "Dicembre",
+}
+
 def normalize_issue_type(value):
     if value is None:
         return ""
@@ -136,6 +151,17 @@ def get_priority_complexity_score(priority):
     color_key = get_priority_color_key(priority)
 
     return PRIORITY_COMPLEXITY_SCORE.get(color_key, 0)
+
+def get_month_label(timestamp, include_year=False):
+    if pd.isna(timestamp):
+        return ""
+
+    month_name = ITALIAN_MONTH_NAMES.get(timestamp.month, str(timestamp.month))
+
+    if include_year:
+        return f"{month_name} {timestamp.year}"
+
+    return month_name
 
 def filter_task_bug(df: pd.DataFrame):
     if df.empty or "IssueType" not in df.columns:
@@ -601,10 +627,17 @@ def render_priority_monthly_panel(df: pd.DataFrame, key_suffix: str = "default")
         .replace("", NO_PRIORITY_LABEL)
     )
 
-    monthly_df["Mese"] = (
+    monthly_df["MeseKey"] = (
         monthly_df["Created"]
         .dt.to_period("M")
         .astype(str)
+    )
+
+    years = monthly_df["Created"].dt.year.dropna().unique()
+    include_year = len(years) > 1
+
+    monthly_df["Mese"] = monthly_df["Created"].apply(
+        lambda value: get_month_label(value, include_year=include_year)
     )
 
     monthly_df["Indice complessità"] = monthly_df["Priorità cliente"].apply(
@@ -613,7 +646,7 @@ def render_priority_monthly_panel(df: pd.DataFrame, key_suffix: str = "default")
 
     grouped = (
         monthly_df
-        .groupby(["Mese", "Priorità cliente"], dropna=False)
+        .groupby(["MeseKey", "Mese", "Priorità cliente"], dropna=False)
         .size()
         .reset_index(name="Task/Bug")
     )
@@ -629,7 +662,7 @@ def render_priority_monthly_panel(df: pd.DataFrame, key_suffix: str = "default")
     grouped = (
         grouped
         .sort_values(
-            by=["Mese", "__priority_order", "Priorità cliente"],
+            by=["MeseKey", "__priority_order", "Priorità cliente"],
             ascending=[True, True, True],
             kind="mergesort",
         )
@@ -638,7 +671,7 @@ def render_priority_monthly_panel(df: pd.DataFrame, key_suffix: str = "default")
 
     monthly_score_df = (
         monthly_df
-        .groupby("Mese", dropna=False)
+        .groupby(["MeseKey", "Mese"], dropna=False)
         .agg(
             **{
                 "Ticket": ("Issue", "count"),
@@ -660,7 +693,7 @@ def render_priority_monthly_panel(df: pd.DataFrame, key_suffix: str = "default")
             }
         )
         .reset_index()
-        .sort_values("Mese")
+        .sort_values("MeseKey")
     )
 
     monthly_score_df["Indice complessità medio"] = (
@@ -681,15 +714,9 @@ def render_priority_monthly_panel(df: pd.DataFrame, key_suffix: str = "default")
         last_month_score = monthly_score_df.iloc[-1]["Indice complessità medio"]
         score_delta = round(last_month_score - first_month_score, 2)
 
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3 = st.columns(3)
 
     with c1:
-        render_metric_card(
-            label="Mesi analizzati",
-            value=monthly_score_df["Mese"].nunique(),
-        )
-
-    with c2:
         render_metric_card(
             label="Indice complessità ultimo mese",
             value=last_month_score,
@@ -697,7 +724,7 @@ def render_priority_monthly_panel(df: pd.DataFrame, key_suffix: str = "default")
             background="#EFF6FF",
         )
 
-    with c3:
+    with c2:
         render_metric_card(
             label="Variazione indice",
             value=score_delta,
@@ -705,7 +732,7 @@ def render_priority_monthly_panel(df: pd.DataFrame, key_suffix: str = "default")
             background="#FFFAEB" if score_delta > 0 else "#ECFDF3",
         )
 
-    with c4:
+    with c3:
         latest_altissima_percentage = 0
 
         if not monthly_score_df.empty:
@@ -725,7 +752,13 @@ def render_priority_monthly_panel(df: pd.DataFrame, key_suffix: str = "default")
         "Altissima=5, Alta=4, Media=3, Bassa=2, Fase 2=1."
     )
 
-    ordered_months = sorted(grouped["Mese"].unique().tolist())
+    month_order_df = (
+        monthly_df[["MeseKey", "Mese"]]
+        .drop_duplicates()
+        .sort_values("MeseKey")
+    )
+
+    ordered_months = month_order_df["Mese"].tolist()
 
     ordered_priorities = [
         priority
@@ -764,6 +797,12 @@ def render_priority_monthly_panel(df: pd.DataFrame, key_suffix: str = "default")
         barmode="stack",
     )
 
+    fig.update_xaxes(
+        type="category",
+        categoryorder="array",
+        categoryarray=ordered_months,
+    )
+
     fig.update_traces(
         textposition="inside",
         marker_line_width=0,
@@ -775,8 +814,10 @@ def render_priority_monthly_panel(df: pd.DataFrame, key_suffix: str = "default")
         key=f"priority_monthly_chart_{key_suffix}",
     )
 
+    monthly_score_display_df = monthly_score_df.drop(columns=["MeseKey"])
+
     st.dataframe(
-        monthly_score_df,
+        monthly_score_display_df,
         use_container_width=True,
         hide_index=True,
         key=f"priority_monthly_score_table_{key_suffix}",
@@ -792,7 +833,7 @@ def render_priority_monthly_panel(df: pd.DataFrame, key_suffix: str = "default")
         },
     )
 
-    table_df = grouped.drop(columns=["__priority_order", "__color_key"])
+    table_df = grouped.drop(columns=["MeseKey", "__priority_order", "__color_key"])
 
     st.dataframe(
         table_df,
