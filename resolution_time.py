@@ -2,9 +2,11 @@ import html
 import io
 import re
 import unicodedata
-import requests
+from zoneinfo import ZoneInfo
+
 import pandas as pd
 import plotly.express as px
+import requests
 import streamlit as st
 
 from requests.auth import HTTPBasicAuth
@@ -31,10 +33,10 @@ EXECUTION_STATUSES = {
     "ANALISI PRELIMINARE",
     "IN CORSO",
     "IN REVISIONE/TEST",
+    "ON HOLD TEMP",
 }
 
 EXCLUDED_STATUSES = {
-    "ON HOLD TEMP",
     "BLOCCATO",
 }
 
@@ -47,13 +49,22 @@ CLOSING_STATUSES = {
     "ANNULLATO",
 }
 
-WORKING_HOURS_PER_DAY = 8
-MONTHLY_TREND_START_MONTH = 6
-
 CALCULATED_ESITI = {
     "Calcolato",
     "Calcolato tramite resolutiondate",
 }
+
+# ======================
+# CONFIG ORARIO LAVORATIVO
+# ======================
+
+WORKING_TIMEZONE = "Europe/Rome"
+WORKING_HOURS_PER_DAY = 8
+WORKING_DAY_START_HOUR = 9
+LUNCH_BREAK_START_HOUR = 13
+LUNCH_BREAK_END_HOUR = 14
+WORKING_DAY_END_HOUR = 18
+MONTHLY_TREND_START_MONTH = 6
 
 # ======================
 # UI HELPERS
@@ -161,11 +172,114 @@ def is_completed_issue(issue_info: dict) -> bool:
 
     return False
 
+# ======================
+# TEMPO LAVORATIVO
+# ======================
+
 def seconds_to_hours(seconds: float) -> float:
     return round(seconds / 3600, 2)
 
 def hours_to_working_days(hours: float) -> float:
-    return round(hours / WORKING_HOURS_PER_DAY, 2)
+    return round(hours / WORKING_HOURS_PER_DAY, 3)
+
+def to_working_timezone(timestamp):
+    if timestamp is None or pd.isna(timestamp):
+        return pd.NaT
+
+    parsed = pd.to_datetime(
+        timestamp,
+        utc=True,
+        errors="coerce",
+    )
+
+    if pd.isna(parsed):
+        return pd.NaT
+
+    return parsed.tz_convert(WORKING_TIMEZONE)
+
+def is_working_day(timestamp: pd.Timestamp) -> bool:
+    return timestamp.weekday() < 5
+
+def build_working_interval(day: pd.Timestamp, start_hour: int, end_hour: int):
+    timezone = ZoneInfo(WORKING_TIMEZONE)
+
+    start = pd.Timestamp(
+        year=day.year,
+        month=day.month,
+        day=day.day,
+        hour=start_hour,
+        minute=0,
+        second=0,
+        tz=timezone,
+    )
+
+    end = pd.Timestamp(
+        year=day.year,
+        month=day.month,
+        day=day.day,
+        hour=end_hour,
+        minute=0,
+        second=0,
+        tz=timezone,
+    )
+
+    return start, end
+
+def overlap_seconds(start_a, end_a, start_b, end_b) -> float:
+    overlap_start = max(start_a, start_b)
+    overlap_end = min(end_a, end_b)
+
+    if overlap_end <= overlap_start:
+        return 0.0
+
+    return max((overlap_end - overlap_start).total_seconds(), 0.0)
+
+def calculate_working_seconds_between(start_ts, end_ts) -> float:
+    local_start = to_working_timezone(start_ts)
+    local_end = to_working_timezone(end_ts)
+
+    if pd.isna(local_start) or pd.isna(local_end):
+        return 0.0
+
+    if local_end <= local_start:
+        return 0.0
+
+    total_seconds = 0.0
+
+    current_day = local_start.normalize()
+    last_day = local_end.normalize()
+
+    while current_day <= last_day:
+        if is_working_day(current_day):
+            morning_start, morning_end = build_working_interval(
+                current_day,
+                WORKING_DAY_START_HOUR,
+                LUNCH_BREAK_START_HOUR,
+            )
+
+            afternoon_start, afternoon_end = build_working_interval(
+                current_day,
+                LUNCH_BREAK_END_HOUR,
+                WORKING_DAY_END_HOUR,
+            )
+
+            total_seconds += overlap_seconds(
+                local_start,
+                local_end,
+                morning_start,
+                morning_end,
+            )
+
+            total_seconds += overlap_seconds(
+                local_start,
+                local_end,
+                afternoon_start,
+                afternoon_end,
+            )
+
+        current_day = current_day + pd.Timedelta(days=1)
+
+    return total_seconds
 
 def build_epic_label(issue_info: dict) -> str:
     epic_name = str(issue_info.get("EpicName", "") or "").strip()
@@ -362,8 +476,10 @@ def find_end_and_excluded_time(
             continue
 
         if current_status in EXCLUDED_STATUSES:
-            interval_seconds = (event_ts - previous_ts).total_seconds()
-            excluded_seconds += max(interval_seconds, 0)
+            excluded_seconds += calculate_working_seconds_between(
+                previous_ts,
+                event_ts,
+            )
 
         to_status = event.get("ToStatusNormalized", "")
 
@@ -428,15 +544,19 @@ def estimate_excluded_time_until_end(
             continue
 
         if current_status in EXCLUDED_STATUSES:
-            interval_seconds = (event_ts - previous_ts).total_seconds()
-            excluded_seconds += max(interval_seconds, 0)
+            excluded_seconds += calculate_working_seconds_between(
+                previous_ts,
+                event_ts,
+            )
 
         current_status = event.get("ToStatusNormalized", "")
         previous_ts = event_ts
 
     if current_status in EXCLUDED_STATUSES and end_ts > previous_ts:
-        interval_seconds = (end_ts - previous_ts).total_seconds()
-        excluded_seconds += max(interval_seconds, 0)
+        excluded_seconds += calculate_working_seconds_between(
+            previous_ts,
+            end_ts,
+        )
 
     return excluded_seconds
 
@@ -524,9 +644,9 @@ def compute_resolution_time_for_issue(
     result["Data fine lavorazione"] = end_ts
     result["Stato fine"] = end_status
 
-    gross_seconds = max(
-        (end_ts - start_ts).total_seconds(),
-        0,
+    gross_seconds = calculate_working_seconds_between(
+        start_ts,
+        end_ts,
     )
 
     net_seconds = max(
@@ -748,7 +868,7 @@ def build_epic_resolution_summary(calculated_df: pd.DataFrame) -> pd.DataFrame:
     ]
 
     for column in numeric_columns:
-        summary_df[column] = summary_df[column].round(2)
+        summary_df[column] = summary_df[column].round(3)
 
     summary_df = summary_df.sort_values(
         by=["Tempo medio netto giorni", "Ticket calcolati"],
@@ -842,7 +962,7 @@ def build_monthly_resolution_summary_by_epic(
     ]
 
     for column in numeric_columns:
-        summary_df[column] = summary_df[column].round(2)
+        summary_df[column] = summary_df[column].round(3)
 
     return summary_df[columns]
 
@@ -923,7 +1043,7 @@ def create_resolution_time_excel_export(resolution_df: pd.DataFrame):
 
         number_format = workbook.add_format(
             {
-                "num_format": "0.00",
+                "num_format": "0.000",
             }
         )
 
@@ -979,10 +1099,11 @@ def render_resolution_time_section(
         "escludendo le Epic. "
         "Il calcolo parte dalla prima transizione da uno stato di apertura "
         "a uno stato di esecuzione. "
-        "Il tempo trascorso negli stati **ON HOLD TEMP** e **BLOCCATO** "
-        "viene escluso dal calcolo netto. "
-        "I giorni mostrati sono **giorni lavorativi equivalenti da 8 ore**, "
-        "non giorni solari."
+        "Sono conteggiate solo le ore lavorative **09:00–13:00** e "
+        "**14:00–18:00**, dal lunedì al venerdì. "
+        "Il tempo trascorso in stato **BLOCCATO** viene escluso dal calcolo netto. "
+        "Il tempo trascorso in stato **ON HOLD TEMP** viene invece conteggiato. "
+        "I giorni mostrati sono giorni lavorativi equivalenti da 8 ore."
     )
 
     if issue_df.empty:
@@ -1137,7 +1258,7 @@ def render_resolution_time_section(
     if not calculated_df.empty:
         average_days = round(
             calculated_df["Tempo netto giorni"].mean(),
-            2,
+            3,
         )
 
         average_hours = round(
@@ -1147,17 +1268,17 @@ def render_resolution_time_section(
 
         median_days = round(
             calculated_df["Tempo netto giorni"].median(),
-            2,
+            3,
         )
 
         max_days = round(
             calculated_df["Tempo netto giorni"].max(),
-            2,
+            3,
         )
 
         excluded_average_days = round(
             calculated_df["Tempo escluso giorni"].mean(),
-            2,
+            3,
         )
 
     t1, t2, t3, t4 = st.columns(4)
@@ -1240,7 +1361,9 @@ def render_resolution_time_section(
         st.caption(
             "Il grafico mostra come cambia il **tempo medio netto di risoluzione** "
             "mese per mese, separando i valori per **Epic**. "
-            "I giorni sono giorni lavorativi equivalenti da 8 ore."
+            "I giorni sono giorni lavorativi equivalenti da 8 ore, calcolati "
+            "solo sulle fasce 09:00–13:00 e 14:00–18:00. "
+            "Solo il tempo in stato **BLOCCATO** viene escluso."
         )
 
         fig = px.line(
@@ -1278,15 +1401,15 @@ def render_resolution_time_section(
             column_config={
                 "Tempo medio netto giorni": st.column_config.NumberColumn(
                     "Tempo medio netto giorni lav.",
-                    format="%.2f",
+                    format="%.3f",
                 ),
                 "Tempo mediano netto giorni": st.column_config.NumberColumn(
                     "Tempo mediano netto giorni lav.",
-                    format="%.2f",
+                    format="%.3f",
                 ),
                 "Tempo massimo netto giorni": st.column_config.NumberColumn(
                     "Tempo massimo netto giorni lav.",
-                    format="%.2f",
+                    format="%.3f",
                 ),
                 "Tempo medio netto ore": st.column_config.NumberColumn(
                     "Tempo medio netto ore",
@@ -1294,7 +1417,7 @@ def render_resolution_time_section(
                 ),
                 "Tempo escluso medio giorni": st.column_config.NumberColumn(
                     "Tempo escluso medio giorni lav.",
-                    format="%.2f",
+                    format="%.3f",
                 ),
             },
         )
@@ -1321,15 +1444,15 @@ def render_resolution_time_section(
             column_config={
                 "Tempo medio netto giorni": st.column_config.NumberColumn(
                     "Tempo medio netto giorni lav.",
-                    format="%.2f",
+                    format="%.3f",
                 ),
                 "Tempo mediano netto giorni": st.column_config.NumberColumn(
                     "Tempo mediano netto giorni lav.",
-                    format="%.2f",
+                    format="%.3f",
                 ),
                 "Tempo massimo netto giorni": st.column_config.NumberColumn(
                     "Tempo massimo netto giorni lav.",
-                    format="%.2f",
+                    format="%.3f",
                 ),
                 "Tempo medio netto ore": st.column_config.NumberColumn(
                     "Tempo medio netto ore",
@@ -1337,7 +1460,7 @@ def render_resolution_time_section(
                 ),
                 "Tempo escluso medio giorni": st.column_config.NumberColumn(
                     "Tempo escluso medio giorni lav.",
-                    format="%.2f",
+                    format="%.3f",
                 ),
             },
         )
@@ -1407,7 +1530,10 @@ def render_resolution_time_section(
 
     st.caption(
         "Le colonne in giorni rappresentano giorni lavorativi equivalenti "
-        f"da {WORKING_HOURS_PER_DAY} ore."
+        f"da {WORKING_HOURS_PER_DAY} ore. "
+        "Il calcolo considera solo le fasce lavorative 09:00–13:00 "
+        "e 14:00–18:00, dal lunedì al venerdì. "
+        "Solo il tempo in stato **BLOCCATO** viene escluso dal netto."
     )
 
     st.dataframe(
@@ -1418,18 +1544,18 @@ def render_resolution_time_section(
         column_config={
             "Tempo lordo giorni": st.column_config.NumberColumn(
                 "Tempo lordo giorni lav.",
-                format="%.2f",
+                format="%.3f",
             ),
             "Tempo escluso giorni": st.column_config.NumberColumn(
                 "Tempo escluso giorni lav.",
-                format="%.2f",
+                format="%.3f",
             ),
             "Tempo netto giorni": st.column_config.NumberColumn(
                 "Tempo netto giorni lav.",
-                format="%.2f",
+                format="%.3f",
             ),
             "Tempo netto ore": st.column_config.NumberColumn(
-                "Tempo netto ore",
+                "Tempo netto ore lav.",
                 format="%.2f",
             ),
             "Url": st.column_config.LinkColumn("Jira"),
