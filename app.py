@@ -15,6 +15,7 @@ from ui_components import (
     render_assignee_panel,
     render_priority_panel,
     render_priority_monthly_panel,
+    render_estimate_compliance_panel,
 )
 from resolution_time import render_resolution_time_section
 
@@ -554,11 +555,12 @@ render_kpis(df_view)
 
 st.divider()
 
-tab_overview, tab_people, tab_priority_trend, tab_resolution_time = st.tabs(
+tab_overview, tab_people, tab_priority_trend, tab_estimates, tab_resolution_time = st.tabs(
     [
         "Overview",
         "Persone",
         "Andamento priorità",
+        "Rispetto stime",
         "Tempi risoluzione",
     ]
 )
@@ -581,6 +583,9 @@ with tab_people:
 
 with tab_priority_trend:
     render_priority_monthly_panel(df_view, key_suffix="priority_trend")
+
+with tab_estimates:
+    render_estimate_compliance_panel(df_view, key_suffix="estimates")
 
 with tab_resolution_time:
     render_resolution_time_section(
