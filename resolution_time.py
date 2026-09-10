@@ -49,6 +49,11 @@ CLOSING_STATUSES = {
 WORKING_HOURS_PER_DAY = 8
 MONTHLY_TREND_START_MONTH = 6
 
+CALCULATED_ESITI = {
+    "Calcolato",
+    "Calcolato tramite resolutiondate",
+}
+
 # ======================
 # NORMALIZZAZIONE
 # ======================
@@ -119,6 +124,23 @@ def seconds_to_hours(seconds: float) -> float:
 
 def hours_to_working_days(hours: float) -> float:
     return round(hours / WORKING_HOURS_PER_DAY, 2)
+
+def safe_float(value, default: float = 0.0) -> float:
+    try:
+        if value is None or pd.isna(value):
+            return default
+
+        return float(value)
+    except Exception:
+        return default
+
+def get_estimate_hours(issue_info: dict) -> float:
+    estimate = issue_info.get("StimaOre", None)
+
+    if estimate is None:
+        estimate = issue_info.get("Stima (in ore)", 0)
+
+    return round(safe_float(estimate, 0.0), 2)
 
 def build_epic_label(issue_info: dict) -> str:
     epic_name = str(issue_info.get("EpicName", "") or "").strip()
@@ -281,11 +303,6 @@ def find_start_event(events: list[dict]):
     return None
 
 def get_effective_closing_statuses(issue_info: dict) -> set[str]:
-    """
-    Usa gli stati di chiusura configurati e aggiunge anche lo stato corrente
-    del ticket se il ticket risulta completato.
-    """
-
     effective_closing_statuses = set(CLOSING_STATUSES)
 
     if is_completed_issue(issue_info):
@@ -412,6 +429,7 @@ def compute_resolution_time_for_issue(
     changelog: list[dict],
 ) -> dict:
     issue_key = issue_info.get("Issue", "")
+    stima_ore = get_estimate_hours(issue_info)
 
     result = {
         "Issue": issue_key,
@@ -422,6 +440,7 @@ def compute_resolution_time_for_issue(
         "EpicKey": issue_info.get("EpicKey", ""),
         "EpicName": issue_info.get("EpicName", ""),
         "Epic": build_epic_label(issue_info),
+        "StimaOre": stima_ore,
         "Data inizio lavorazione": pd.NaT,
         "Data fine lavorazione": pd.NaT,
         "Stato fine": "",
@@ -431,6 +450,8 @@ def compute_resolution_time_for_issue(
         "Tempo escluso ore": None,
         "Tempo netto giorni": None,
         "Tempo netto ore": None,
+        "Entro stima": "",
+        "Scostamento ore": None,
         "Esito": "",
         "Url": issue_info.get("Url", ""),
     }
@@ -510,6 +531,13 @@ def compute_resolution_time_for_issue(
     result["Tempo netto ore"] = net_hours
     result["Tempo netto giorni"] = hours_to_working_days(net_hours)
 
+    if stima_ore > 0:
+        result["Entro stima"] = "Sì" if net_hours <= stima_ore else "No"
+        result["Scostamento ore"] = round(net_hours - stima_ore, 2)
+    else:
+        result["Entro stima"] = "Stima non valorizzata"
+        result["Scostamento ore"] = None
+
     if end_source == "resolutiondate":
         result["Esito"] = "Calcolato tramite resolutiondate"
     else:
@@ -555,6 +583,7 @@ def build_resolution_time_dataframe(
         "EpicKey",
         "EpicName",
         "Epic",
+        "StimaOre",
         "Data inizio lavorazione",
         "Data fine lavorazione",
         "Stato fine",
@@ -564,6 +593,8 @@ def build_resolution_time_dataframe(
         "Tempo escluso ore",
         "Tempo netto giorni",
         "Tempo netto ore",
+        "Entro stima",
+        "Scostamento ore",
         "Esito",
         "Url",
     ]
@@ -608,6 +639,7 @@ def build_resolution_time_dataframe(
                 "EpicKey": issue_info.get("EpicKey", ""),
                 "EpicName": issue_info.get("EpicName", ""),
                 "Epic": build_epic_label(issue_info),
+                "StimaOre": get_estimate_hours(issue_info),
                 "Data inizio lavorazione": pd.NaT,
                 "Data fine lavorazione": pd.NaT,
                 "Stato fine": "",
@@ -617,6 +649,8 @@ def build_resolution_time_dataframe(
                 "Tempo escluso ore": None,
                 "Tempo netto giorni": None,
                 "Tempo netto ore": None,
+                "Entro stima": "",
+                "Scostamento ore": None,
                 "Esito": f"Errore recupero changelog: {str(exc)[:180]}",
                 "Url": issue_info.get("Url", ""),
             }
@@ -654,12 +688,14 @@ def build_resolution_time_dataframe(
     )
 
     numeric_columns = [
+        "StimaOre",
         "Tempo lordo giorni",
         "Tempo lordo ore",
         "Tempo escluso giorni",
         "Tempo escluso ore",
         "Tempo netto giorni",
         "Tempo netto ore",
+        "Scostamento ore",
     ]
 
     for column in numeric_columns:
@@ -674,10 +710,69 @@ def build_resolution_time_dataframe(
 # AGGREGAZIONI
 # ======================
 
+def build_estimate_compliance_summary(calculated_df: pd.DataFrame) -> dict:
+    result = {
+        "ticket_con_stima": 0,
+        "entro_stima": 0,
+        "sforati": 0,
+        "percentuale_entro_stima": 0.0,
+    }
+
+    if calculated_df.empty:
+        return result
+
+    if "StimaOre" not in calculated_df.columns:
+        return result
+
+    estimate_df = calculated_df.copy()
+
+    estimate_df["StimaOre"] = pd.to_numeric(
+        estimate_df["StimaOre"],
+        errors="coerce",
+    ).fillna(0)
+
+    estimate_df["Tempo netto ore"] = pd.to_numeric(
+        estimate_df["Tempo netto ore"],
+        errors="coerce",
+    )
+
+    estimate_df = estimate_df[
+        estimate_df["StimaOre"] > 0
+    ].copy()
+
+    estimate_df = estimate_df.dropna(subset=["Tempo netto ore"])
+
+    if estimate_df.empty:
+        return result
+
+    estimate_df["__entro_stima"] = (
+        estimate_df["Tempo netto ore"] <= estimate_df["StimaOre"]
+    )
+
+    ticket_con_stima = len(estimate_df)
+    entro_stima = int(estimate_df["__entro_stima"].sum())
+    sforati = ticket_con_stima - entro_stima
+
+    percentuale_entro_stima = round(
+        entro_stima / ticket_con_stima * 100,
+        1,
+    )
+
+    result["ticket_con_stima"] = ticket_con_stima
+    result["entro_stima"] = entro_stima
+    result["sforati"] = sforati
+    result["percentuale_entro_stima"] = percentuale_entro_stima
+
+    return result
+
 def build_epic_resolution_summary(calculated_df: pd.DataFrame) -> pd.DataFrame:
     columns = [
         "Epic",
         "Ticket calcolati",
+        "Ticket con stima",
+        "Chiusi entro stima",
+        "Sforati",
+        "% entro stima",
         "Tempo medio netto giorni",
         "Tempo mediano netto giorni",
         "Tempo massimo netto giorni",
@@ -690,32 +785,28 @@ def build_epic_resolution_summary(calculated_df: pd.DataFrame) -> pd.DataFrame:
 
     safe_df = ensure_epic_column(calculated_df)
 
-    summary_df = (
-        safe_df
-        .groupby("Epic", dropna=False)
-        .agg(
-            **{
-                "Ticket calcolati": ("Issue", "count"),
-                "Tempo medio netto giorni": ("Tempo netto giorni", "mean"),
-                "Tempo mediano netto giorni": ("Tempo netto giorni", "median"),
-                "Tempo massimo netto giorni": ("Tempo netto giorni", "max"),
-                "Tempo medio netto ore": ("Tempo netto ore", "mean"),
-                "Tempo escluso medio giorni": ("Tempo escluso giorni", "mean"),
-            }
-        )
-        .reset_index()
-    )
+    summary_rows = []
 
-    numeric_columns = [
-        "Tempo medio netto giorni",
-        "Tempo mediano netto giorni",
-        "Tempo massimo netto giorni",
-        "Tempo medio netto ore",
-        "Tempo escluso medio giorni",
-    ]
+    for epic, epic_df in safe_df.groupby("Epic", dropna=False):
+        estimate_summary = build_estimate_compliance_summary(epic_df)
 
-    for column in numeric_columns:
-        summary_df[column] = summary_df[column].round(2)
+        row = {
+            "Epic": epic,
+            "Ticket calcolati": len(epic_df),
+            "Ticket con stima": estimate_summary["ticket_con_stima"],
+            "Chiusi entro stima": estimate_summary["entro_stima"],
+            "Sforati": estimate_summary["sforati"],
+            "% entro stima": estimate_summary["percentuale_entro_stima"],
+            "Tempo medio netto giorni": round(epic_df["Tempo netto giorni"].mean(), 2),
+            "Tempo mediano netto giorni": round(epic_df["Tempo netto giorni"].median(), 2),
+            "Tempo massimo netto giorni": round(epic_df["Tempo netto giorni"].max(), 2),
+            "Tempo medio netto ore": round(epic_df["Tempo netto ore"].mean(), 2),
+            "Tempo escluso medio giorni": round(epic_df["Tempo escluso giorni"].mean(), 2),
+        }
+
+        summary_rows.append(row)
+
+    summary_df = pd.DataFrame(summary_rows, columns=columns)
 
     summary_df = summary_df.sort_values(
         by=["Tempo medio netto giorni", "Ticket calcolati"],
@@ -864,12 +955,7 @@ def create_resolution_time_excel_export(resolution_df: pd.DataFrame):
         )
 
         calculated_df = export_df[
-            export_df["Esito"].isin(
-                [
-                    "Calcolato",
-                    "Calcolato tramite resolutiondate",
-                ]
-            )
+            export_df["Esito"].isin(CALCULATED_ESITI)
         ].copy()
 
         epic_summary_df = build_epic_resolution_summary(calculated_df)
@@ -911,17 +997,21 @@ def create_resolution_time_excel_export(resolution_df: pd.DataFrame):
         resolution_sheet.set_column("B:B", 60)
         resolution_sheet.set_column("C:E", 18)
         resolution_sheet.set_column("F:H", 28)
-        resolution_sheet.set_column("I:J", 22, datetime_format)
-        resolution_sheet.set_column("K:K", 18)
-        resolution_sheet.set_column("L:Q", 18, number_format)
-        resolution_sheet.set_column("R:R", 46)
-        resolution_sheet.set_column("S:S", 60)
+        resolution_sheet.set_column("I:I", 14, number_format)
+        resolution_sheet.set_column("J:K", 22, datetime_format)
+        resolution_sheet.set_column("L:L", 18)
+        resolution_sheet.set_column("M:R", 18, number_format)
+        resolution_sheet.set_column("S:S", 18)
+        resolution_sheet.set_column("T:T", 18, number_format)
+        resolution_sheet.set_column("U:U", 46)
+        resolution_sheet.set_column("V:V", 60)
 
         if not epic_summary_df.empty:
             epic_sheet = writer.sheets["Tempi per Epic"]
             epic_sheet.set_column("A:A", 50)
-            epic_sheet.set_column("B:B", 18)
-            epic_sheet.set_column("C:G", 24, number_format)
+            epic_sheet.set_column("B:E", 18)
+            epic_sheet.set_column("F:F", 18, number_format)
+            epic_sheet.set_column("G:K", 24, number_format)
 
         if not monthly_summary_df.empty:
             monthly_sheet = writer.sheets["Andamento mensile"]
@@ -947,11 +1037,11 @@ def render_resolution_time_section(
     st.subheader("Tempi di risoluzione")
 
     st.caption(
-        "Il tempo viene calcolato sui ticket completati. "
+        "Il tempo viene calcolato sui ticket completati, escludendo le Epic. "
         "Il calcolo parte dalla prima transizione da uno stato di apertura "
         "a uno stato di esecuzione, ad esempio **Da fare → ANALISI** oppure "
         "**Da fare → IN CORSO**. "
-        "Il tempo trascorso nello stato **BLOCCATO** "
+        "Il tempo trascorso negli stati **ON HOLD TEMP** e **BLOCCATO** "
         "viene escluso dal calcolo netto. "
         "I giorni mostrati sono **giorni lavorativi equivalenti da 8 ore**, "
         "non giorni solari."
@@ -1091,12 +1181,7 @@ def render_resolution_time_section(
     resolution_df = ensure_epic_column(resolution_df)
 
     calculated_df = resolution_df[
-        resolution_df["Esito"].isin(
-            [
-                "Calcolato",
-                "Calcolato tramite resolutiondate",
-            ]
-        )
+        resolution_df["Esito"].isin(CALCULATED_ESITI)
     ].copy()
 
     calculated_df = ensure_epic_column(calculated_df)
@@ -1150,6 +1235,40 @@ def render_resolution_time_section(
     else:
         c7.metric("Tempo massimo netto", "0 giorni lav.")
         c8.metric("Tempo escluso medio", "0 giorni lav.")
+
+    st.divider()
+
+    st.subheader("Rispetto stime")
+
+    estimate_summary = build_estimate_compliance_summary(calculated_df)
+
+    e1, e2, e3, e4 = st.columns(4)
+
+    e1.metric(
+        "Ticket con stima valorizzata",
+        estimate_summary["ticket_con_stima"],
+    )
+
+    e2.metric(
+        "Chiusi entro stima",
+        estimate_summary["entro_stima"],
+    )
+
+    e3.metric(
+        "Sforati",
+        estimate_summary["sforati"],
+    )
+
+    e4.metric(
+        "% entro stima",
+        f"{estimate_summary['percentuale_entro_stima']}%",
+    )
+
+    st.caption(
+        "Il confronto considera solo i ticket calcolati con **StimaOre > 0**. "
+        "Un ticket è considerato entro stima se il **Tempo netto ore** è minore "
+        "o uguale alla stima."
+    )
 
     st.divider()
 
@@ -1235,7 +1354,7 @@ def render_resolution_time_section(
 
         st.caption(
             "Questa tabella permette di confrontare il tempo medio di risoluzione "
-            "tra le diverse Epic."
+            "tra le diverse Epic e include anche il rispetto delle stime."
         )
 
         st.dataframe(
@@ -1244,6 +1363,10 @@ def render_resolution_time_section(
             hide_index=True,
             key="resolution_time_epic_summary_table",
             column_config={
+                "% entro stima": st.column_config.NumberColumn(
+                    "% entro stima",
+                    format="%.1f%%",
+                ),
                 "Tempo medio netto giorni": st.column_config.NumberColumn(
                     "Tempo medio netto giorni lav.",
                     format="%.2f",
@@ -1313,6 +1436,7 @@ def render_resolution_time_section(
         "EpicKey",
         "EpicName",
         "Epic",
+        "StimaOre",
         "Data inizio lavorazione",
         "Data fine lavorazione",
         "Stato fine",
@@ -1320,6 +1444,8 @@ def render_resolution_time_section(
         "Tempo escluso giorni",
         "Tempo netto giorni",
         "Tempo netto ore",
+        "Entro stima",
+        "Scostamento ore",
         "Esito",
         "Url",
     ]
@@ -1341,6 +1467,10 @@ def render_resolution_time_section(
         hide_index=True,
         key="resolution_time_detail_table",
         column_config={
+            "StimaOre": st.column_config.NumberColumn(
+                "StimaOre",
+                format="%.2f",
+            ),
             "Tempo lordo giorni": st.column_config.NumberColumn(
                 "Tempo lordo giorni lav.",
                 format="%.2f",
@@ -1355,6 +1485,10 @@ def render_resolution_time_section(
             ),
             "Tempo netto ore": st.column_config.NumberColumn(
                 "Tempo netto ore",
+                format="%.2f",
+            ),
+            "Scostamento ore": st.column_config.NumberColumn(
+                "Scostamento ore",
                 format="%.2f",
             ),
             "Url": st.column_config.LinkColumn("Jira"),
