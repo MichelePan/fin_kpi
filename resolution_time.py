@@ -1,3 +1,4 @@
+import html
 import io
 import re
 import unicodedata
@@ -55,6 +56,49 @@ CALCULATED_ESITI = {
 }
 
 # ======================
+# UI HELPERS
+# ======================
+
+def render_metric_card(label, value, color="#172033", background="#ffffff"):
+    safe_label = html.escape(str(label))
+    safe_value = html.escape(str(value))
+
+    st.markdown(
+        f"""
+        <div style="
+            background: {background};
+            border: 1px solid rgba(16, 24, 40, 0.08);
+            border-radius: 16px;
+            padding: 18px 18px;
+            box-shadow: 0 6px 18px rgba(16, 24, 40, 0.06);
+            min-height: 104px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+        ">
+            <div style="
+                color: #667085;
+                font-size: 0.88rem;
+                font-weight: 600;
+                margin-bottom: 8px;
+                line-height: 1.2;
+            ">
+                {safe_label}
+            </div>
+            <div style="
+                color: {color};
+                font-size: 2rem;
+                font-weight: 800;
+                line-height: 1.1;
+            ">
+                {safe_value}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+# ======================
 # NORMALIZZAZIONE
 # ======================
 
@@ -70,14 +114,12 @@ def normalize_text(value) -> str:
         return ""
 
     text = str(value).strip()
-
     text = unicodedata.normalize("NFKD", text)
     text = "".join(
         character
         for character in text
         if not unicodedata.combining(character)
     )
-
     text = text.upper()
     text = re.sub(r"\s+", " ", text)
 
@@ -288,11 +330,6 @@ def extract_status_events(changelog: list[dict]) -> list[dict]:
     return events
 
 def find_start_event(events: list[dict]):
-    """
-    Cerca la prima transizione da uno stato di apertura
-    verso uno stato di esecuzione.
-    """
-
     for event in events:
         from_status = event.get("FromStatusNormalized", "")
         to_status = event.get("ToStatusNormalized", "")
@@ -546,10 +583,6 @@ def compute_resolution_time_for_issue(
     return result
 
 def filter_completed_non_epic_issues(issue_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Considera tutti i ticket completati, escludendo solo le Epic.
-    """
-
     if issue_df.empty:
         return issue_df.copy()
 
@@ -1193,6 +1226,8 @@ def render_resolution_time_section(
     average_days = 0
     average_hours = 0
     median_days = 0
+    max_days = 0
+    excluded_average_days = 0
 
     if not calculated_df.empty:
         average_days = round(
@@ -1210,31 +1245,81 @@ def render_resolution_time_section(
             2,
         )
 
-    c1, c2, c3, c4 = st.columns(4)
-
-    c1.metric("Tempo medio risoluzione", f"{average_days} giorni lav.")
-    c2.metric("Tempo medio risoluzione ore", f"{average_hours} ore")
-    c3.metric("Ticket calcolati", calculated_tickets)
-    c4.metric("Ticket non calcolati", max(not_calculated_tickets, 0))
-
-    c5, c6, c7, c8 = st.columns(4)
-
-    c5.metric("Mediana risoluzione", f"{median_days} giorni lav.")
-    c6.metric("Ticket completati analizzati", total_rows)
-
-    if not calculated_df.empty:
-        c7.metric(
-            "Tempo massimo netto",
-            f"{round(calculated_df['Tempo netto giorni'].max(), 2)} giorni lav.",
+        max_days = round(
+            calculated_df["Tempo netto giorni"].max(),
+            2,
         )
 
-        c8.metric(
-            "Tempo escluso medio",
-            f"{round(calculated_df['Tempo escluso giorni'].mean(), 2)} giorni lav.",
+        excluded_average_days = round(
+            calculated_df["Tempo escluso giorni"].mean(),
+            2,
         )
-    else:
-        c7.metric("Tempo massimo netto", "0 giorni lav.")
-        c8.metric("Tempo escluso medio", "0 giorni lav.")
+
+    t1, t2, t3, t4 = st.columns(4)
+
+    with t1:
+        render_metric_card(
+            label="Tempo medio risoluzione",
+            value=f"{average_days} giorni lav.",
+            color="#2563EB",
+            background="#EFF6FF",
+        )
+
+    with t2:
+        render_metric_card(
+            label="Tempo medio risoluzione ore",
+            value=f"{average_hours} ore",
+            color="#2563EB",
+            background="#EFF6FF",
+        )
+
+    with t3:
+        render_metric_card(
+            label="Ticket calcolati",
+            value=calculated_tickets,
+            color="#027A48",
+            background="#ECFDF3",
+        )
+
+    with t4:
+        render_metric_card(
+            label="Ticket non calcolati",
+            value=max(not_calculated_tickets, 0),
+            color="#B42318" if not_calculated_tickets > 0 else "#027A48",
+            background="#FEF3F2" if not_calculated_tickets > 0 else "#ECFDF3",
+        )
+
+    t5, t6, t7, t8 = st.columns(4)
+
+    with t5:
+        render_metric_card(
+            label="Mediana risoluzione",
+            value=f"{median_days} giorni lav.",
+            color="#2563EB",
+            background="#EFF6FF",
+        )
+
+    with t6:
+        render_metric_card(
+            label="Ticket completati analizzati",
+            value=total_rows,
+        )
+
+    with t7:
+        render_metric_card(
+            label="Tempo massimo netto",
+            value=f"{max_days} giorni lav.",
+            color="#B54708",
+            background="#FFFAEB",
+        )
+
+    with t8:
+        render_metric_card(
+            label="Tempo escluso medio",
+            value=f"{excluded_average_days} giorni lav.",
+            color="#B54708",
+            background="#FFFAEB",
+        )
 
     st.divider()
 
@@ -1244,25 +1329,37 @@ def render_resolution_time_section(
 
     e1, e2, e3, e4 = st.columns(4)
 
-    e1.metric(
-        "Ticket con stima valorizzata",
-        estimate_summary["ticket_con_stima"],
-    )
+    with e1:
+        render_metric_card(
+            label="Ticket con stima valorizzata",
+            value=estimate_summary["ticket_con_stima"],
+            color="#2563EB",
+            background="#EFF6FF",
+        )
 
-    e2.metric(
-        "Chiusi entro stima",
-        estimate_summary["entro_stima"],
-    )
+    with e2:
+        render_metric_card(
+            label="Chiusi entro stima",
+            value=estimate_summary["entro_stima"],
+            color="#027A48",
+            background="#ECFDF3",
+        )
 
-    e3.metric(
-        "Sforati",
-        estimate_summary["sforati"],
-    )
+    with e3:
+        render_metric_card(
+            label="Sforati",
+            value=estimate_summary["sforati"],
+            color="#B42318",
+            background="#FEF3F2",
+        )
 
-    e4.metric(
-        "% entro stima",
-        f"{estimate_summary['percentuale_entro_stima']}%",
-    )
+    with e4:
+        render_metric_card(
+            label="% entro stima",
+            value=f"{estimate_summary['percentuale_entro_stima']}%",
+            color="#027A48",
+            background="#ECFDF3",
+        )
 
     st.caption(
         "Il confronto considera solo i ticket calcolati con **StimaOre > 0**. "
