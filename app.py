@@ -211,6 +211,8 @@ def cached_search_issues(
         "resolutiondate",
         "timetracking",
         "timeoriginalestimate",
+        "timespent",
+        "aggregatetimespent",
     ]
 
     if epic_link_field_id:
@@ -247,7 +249,20 @@ def estimate_hours_from_fields(fields: dict) -> float:
 
     return round((seconds or 0) / 3600, 2)
 
-def add_estimates_to_issue_dataframe(
+def spent_hours_from_fields(fields: dict) -> float:
+    timetracking = fields.get("timetracking") or {}
+
+    seconds = timetracking.get("timeSpentSeconds")
+
+    if seconds is None:
+        seconds = fields.get("timespent")
+
+    if seconds is None:
+        seconds = fields.get("aggregatetimespent")
+
+    return round((seconds or 0) / 3600, 2)
+
+def add_time_tracking_to_issue_dataframe(
     issue_df: pd.DataFrame,
     issues: list[dict],
 ) -> pd.DataFrame:
@@ -255,12 +270,14 @@ def add_estimates_to_issue_dataframe(
         return issue_df
 
     estimate_map = {}
+    spent_map = {}
 
     for issue in issues:
         issue_key = issue.get("key", "")
         fields = issue.get("fields") or {}
 
         estimate_map[issue_key] = estimate_hours_from_fields(fields)
+        spent_map[issue_key] = spent_hours_from_fields(fields)
 
     updated_df = issue_df.copy()
 
@@ -271,7 +288,15 @@ def add_estimates_to_issue_dataframe(
         .astype(float)
     )
 
+    updated_df["TempoImpiegatoOre"] = (
+        updated_df["Issue"]
+        .map(spent_map)
+        .fillna(0)
+        .astype(float)
+    )
+
     updated_df["Stima (in ore)"] = updated_df["StimaOre"]
+    updated_df["Tempo impiegato (in ore)"] = updated_df["TempoImpiegatoOre"]
 
     return updated_df
 
@@ -389,7 +414,7 @@ df = build_issues_dataframe(
     sprint_field_id=None,
 )
 
-df = add_estimates_to_issue_dataframe(df, issues)
+df = add_time_tracking_to_issue_dataframe(df, issues)
 
 df = add_customer_priority_to_issue_dataframe(
     issue_df=df,
