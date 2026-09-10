@@ -116,6 +116,15 @@ def normalize_priority(value):
 
     return str(value).strip()
 
+def safe_float(value, default: float = 0.0) -> float:
+    try:
+        if value is None or pd.isna(value):
+            return default
+
+        return float(value)
+    except Exception:
+        return default
+
 def get_status_sort_order(status):
     normalized_status = normalize_status(status)
 
@@ -162,6 +171,49 @@ def get_month_label(timestamp, include_year=False):
         return f"{month_name} {timestamp.year}"
 
     return month_name
+
+def is_done_issue(row) -> bool:
+    done_value = row.get("Done", False)
+
+    if bool(done_value) is True:
+        return True
+
+    status_category = normalize_status(row.get("StatusCategory", ""))
+    status = normalize_status(row.get("Stato", ""))
+
+    if status_category == "DONE":
+        return True
+
+    if status in {
+        "DONE",
+        "CHIUSO",
+        "VERBALE CHIUSO",
+        "FATTO",
+        "TICKET FIL NON CHIUSO",
+        "ANNULLATO",
+    }:
+        return True
+
+    return False
+
+def get_estimate_hours(row) -> float:
+    estimate = row.get("StimaOre", None)
+
+    if estimate is None:
+        estimate = row.get("Stima (in ore)", 0)
+
+    return round(safe_float(estimate, 0.0), 2)
+
+def get_spent_hours(row) -> float:
+    spent = row.get("TempoImpiegatoOre", None)
+
+    if spent is None:
+        spent = row.get("Tempo impiegato (in ore)", None)
+
+    if spent is None:
+        spent = row.get("Tempo impiegato ore", 0)
+
+    return round(safe_float(spent, 0.0), 2)
 
 def filter_task_bug(df: pd.DataFrame):
     if df.empty or "IssueType" not in df.columns:
@@ -840,4 +892,184 @@ def render_priority_monthly_panel(df: pd.DataFrame, key_suffix: str = "default")
         use_container_width=True,
         hide_index=True,
         key=f"priority_monthly_detail_table_{key_suffix}",
+    )
+
+def build_estimate_compliance_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        "Issue",
+        "Summary",
+        "Assegnatario",
+        "Stima ore",
+        "Tempo impiegato ore",
+    ]
+
+    if df.empty:
+        return pd.DataFrame(columns=columns)
+
+    task_bug_df = filter_task_bug(df)
+
+    if task_bug_df.empty:
+        return pd.DataFrame(columns=columns)
+
+    estimate_df = task_bug_df.copy()
+
+    estimate_df = estimate_df[
+        estimate_df.apply(
+            lambda row: is_done_issue(row.to_dict()),
+            axis=1,
+        )
+    ].copy()
+
+    if estimate_df.empty:
+        return pd.DataFrame(columns=columns)
+
+    estimate_df["Stima ore"] = estimate_df.apply(
+        lambda row: get_estimate_hours(row.to_dict()),
+        axis=1,
+    )
+
+    estimate_df["Tempo impiegato ore"] = estimate_df.apply(
+        lambda row: get_spent_hours(row.to_dict()),
+        axis=1,
+    )
+
+    estimate_df = estimate_df[
+        estimate_df["Stima ore"] > 0
+    ].copy()
+
+    if estimate_df.empty:
+        return pd.DataFrame(columns=columns)
+
+    estimate_df["Assegnatario"] = (
+        estimate_df["Assignee"]
+        .fillna("")
+        .replace("", "Non assegnato")
+    )
+
+    table_df = estimate_df[
+        [
+            "Issue",
+            "Summary",
+            "Assegnatario",
+            "Stima ore",
+            "Tempo impiegato ore",
+        ]
+    ].copy()
+
+    table_df = table_df.sort_values(
+        by=["Tempo impiegato ore", "Stima ore", "Issue"],
+        ascending=[False, False, True],
+    )
+
+    return table_df
+
+def build_estimate_compliance_summary(df: pd.DataFrame) -> dict:
+    result = {
+        "ticket_con_stima": 0,
+        "entro_stima": 0,
+        "sforati": 0,
+        "percentuale_entro_stima": 0.0,
+    }
+
+    estimate_df = build_estimate_compliance_dataframe(df)
+
+    if estimate_df.empty:
+        return result
+
+    ticket_con_stima = len(estimate_df)
+
+    entro_stima = int(
+        (
+            estimate_df["Tempo impiegato ore"]
+            <= estimate_df["Stima ore"]
+        ).sum()
+    )
+
+    sforati = ticket_con_stima - entro_stima
+
+    percentuale_entro_stima = round(
+        entro_stima / ticket_con_stima * 100,
+        1,
+    )
+
+    result["ticket_con_stima"] = ticket_con_stima
+    result["entro_stima"] = entro_stima
+    result["sforati"] = sforati
+    result["percentuale_entro_stima"] = percentuale_entro_stima
+
+    return result
+
+def render_estimate_compliance_panel(df: pd.DataFrame, key_suffix: str = "default"):
+    st.subheader("Rispetto stime")
+
+    st.caption(
+        "La sezione considera solo **Task/Bug completati** con "
+        "**stima ore maggiore di 0**. "
+        "Un ticket è considerato entro stima se il **tempo impiegato ore** "
+        "è minore o uguale alla **stima ore**."
+    )
+
+    estimate_df = build_estimate_compliance_dataframe(df)
+    estimate_summary = build_estimate_compliance_summary(df)
+
+    c1, c2, c3, c4 = st.columns(4)
+
+    with c1:
+        render_metric_card(
+            label="Ticket con stima valorizzata",
+            value=estimate_summary["ticket_con_stima"],
+            color="#2563EB",
+            background="#EFF6FF",
+        )
+
+    with c2:
+        render_metric_card(
+            label="Entro stima",
+            value=estimate_summary["entro_stima"],
+            color="#027A48",
+            background="#ECFDF3",
+        )
+
+    with c3:
+        render_metric_card(
+            label="Sforati",
+            value=estimate_summary["sforati"],
+            color="#B42318",
+            background="#FEF3F2",
+        )
+
+    with c4:
+        render_metric_card(
+            label="% entro stima",
+            value=f"{estimate_summary['percentuale_entro_stima']}%",
+            color="#027A48",
+            background="#ECFDF3",
+        )
+
+    st.divider()
+
+    st.subheader("Dettaglio ticket")
+
+    if estimate_df.empty:
+        st.info(
+            "Nessun Task/Bug completato con stima valorizzata. "
+            "I ticket con stima nulla o pari a 0 minuti sono esclusi."
+        )
+        return
+
+    st.dataframe(
+        estimate_df,
+        use_container_width=True,
+        hide_index=True,
+        key=f"estimate_compliance_table_{key_suffix}",
+        column_config={
+            "Stima ore": st.column_config.NumberColumn(
+                "Stima ore",
+                format="%.2f",
+            ),
+            "Tempo impiegato ore": st.column_config.NumberColumn(
+                "Tempo impiegato ore",
+                format="%.2f",
+            ),
+        },
     )
