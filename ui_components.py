@@ -999,6 +999,30 @@ def build_estimate_compliance_summary(df: pd.DataFrame) -> dict:
 
     return result
 
+def highlight_spent_time_vs_estimate(row):
+    styles = pd.Series("", index=row.index)
+
+    stima_ore = safe_float(row.get("Stima ore"), 0.0)
+    tempo_impiegato_ore = safe_float(row.get("Tempo impiegato ore"), 0.0)
+
+    if stima_ore <= 0:
+        return styles
+
+    if tempo_impiegato_ore <= stima_ore:
+        styles["Tempo impiegato ore"] = (
+            "background-color: #ECFDF3; "
+            "color: #027A48; "
+            "font-weight: 700;"
+        )
+    else:
+        styles["Tempo impiegato ore"] = (
+            "background-color: #FEF3F2; "
+            "color: #B42318; "
+            "font-weight: 700;"
+        )
+
+    return styles
+
 def render_estimate_compliance_panel(df: pd.DataFrame, key_suffix: str = "default"):
     st.subheader("Rispetto stime")
 
@@ -1057,8 +1081,13 @@ def render_estimate_compliance_panel(df: pd.DataFrame, key_suffix: str = "defaul
         )
         return
 
+    styled_estimate_df = estimate_df.style.apply(
+        highlight_spent_time_vs_estimate,
+        axis=1,
+    )
+
     st.dataframe(
-        estimate_df,
+        styled_estimate_df,
         use_container_width=True,
         hide_index=True,
         key=f"estimate_compliance_table_{key_suffix}",
