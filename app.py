@@ -456,12 +456,6 @@ st.sidebar.caption(
     "**AM** e **Gestione Memoria**."
 )
 
-only_open = st.sidebar.checkbox(
-    "Mostra solo task aperti",
-    value=False,
-    key="filter_only_open",
-)
-
 status_options = sorted(df["Stato"].dropna().unique())
 
 selected_statuses = st.sidebar.multiselect(
@@ -542,7 +536,6 @@ df_view = apply_filters(
     assignees=selected_assignees,
     priorities=selected_priorities,
     epics=selected_epics,
-    only_open=only_open,
 )
 
 # ======================
