@@ -17,6 +17,7 @@ from ui_components import (
     render_priority_monthly_panel,
     render_estimate_compliance_panel,
 )
+from pickup_time import render_pickup_time_section
 from resolution_time import render_resolution_time_section
 
 # ======================
@@ -227,12 +228,19 @@ def cached_search_issues(
 if refresh:
     st.cache_data.clear()
     st.session_state["resolution_time_loaded"] = False
+    st.session_state["pickup_time_loaded"] = False
 
     if "resolution_time_df" in st.session_state:
         del st.session_state["resolution_time_df"]
 
     if "resolution_time_signature" in st.session_state:
         del st.session_state["resolution_time_signature"]
+
+    if "pickup_time_df" in st.session_state:
+        del st.session_state["pickup_time_df"]
+
+    if "pickup_time_signature" in st.session_state:
+        del st.session_state["pickup_time_signature"]
 
     st.rerun()
 
@@ -548,12 +556,20 @@ render_kpis(df_view)
 
 st.divider()
 
-tab_overview, tab_people, tab_priority_trend, tab_estimates, tab_resolution_time = st.tabs(
+(
+    tab_overview,
+    tab_people,
+    tab_priority_trend,
+    tab_estimates,
+    tab_pickup_time,
+    tab_resolution_time,
+) = st.tabs(
     [
         "Overview",
         "Persone",
         "Andamento priorità",
         "Rispetto stime",
+        "Presa in carico",
         "Tempi risoluzione",
     ]
 )
@@ -579,6 +595,14 @@ with tab_priority_trend:
 
 with tab_estimates:
     render_estimate_compliance_panel(df_view, key_suffix="estimates")
+
+with tab_pickup_time:
+    render_pickup_time_section(
+        issue_df=df_view,
+        jira_domain=jira_domain,
+        jira_email=jira_email,
+        jira_api_token=jira_api_token,
+    )
 
 with tab_resolution_time:
     render_resolution_time_section(
