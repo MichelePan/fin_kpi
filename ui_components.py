@@ -1056,7 +1056,7 @@ def render_estimate_compliance_panel(df: pd.DataFrame, key_suffix: str = "defaul
 
     with c3:
         render_metric_card(
-            label="Sforati",
+            label="Fuori stima",
             value=estimate_summary["sforati"],
             color="#B42318",
             background="#FEF3F2",
