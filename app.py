@@ -16,7 +16,6 @@ from ui_components import (
     render_priority_panel,
     render_priority_monthly_panel,
     render_estimate_compliance_panel,
-    render_closed_monthly_panel,
 )
 from pickup_time import render_pickup_time_section
 from resolution_count import render_resolution_count_section
@@ -590,10 +589,6 @@ with tab_overview:
 
     with col2:
         render_priority_panel(df_view, key_suffix="overview")
-
-    st.divider()
-
-    render_closed_monthly_panel(df_view, key_suffix="overview")
 
 with tab_people:
     render_assignee_panel(df_view, key_suffix="people")
