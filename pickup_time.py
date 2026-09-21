@@ -18,6 +18,24 @@ TASK_BUG_TYPES = {
     "bug",
 }
 
+ALLOWED_EPIC_NAMES = {
+    "AM",
+    "GESTIONE MEMORIA",
+}
+
+OPENING_STATUSES = {
+    "DA FARE",
+    "TO DO",
+    "TODO",
+    "BACKLOG",
+    "APERTO",
+    "APERTA",
+    "OPEN",
+    "NEW",
+    "NUOVO",
+    "NUOVA",
+}
+
 PICKUP_STATUSES = {
     "ANALISI",
     "ANALISI PRELIMINARE",
@@ -25,7 +43,13 @@ PICKUP_STATUSES = {
     "IN REVISIONE/TEST",
     "ON HOLD TEMP",
     "BLOCCATO",
-    "ANNULLATO"
+}
+
+CANCELLED_PICKUP_STATUSES = {
+    "ANNULLATO",
+    "ANNULLATA",
+    "CANCELLED",
+    "CANCELED",
 }
 
 PRIORITY_ORDER = [
@@ -101,6 +125,7 @@ def normalize_domain(domain: str) -> str:
     domain = domain.replace("https://", "")
     domain = domain.replace("http://", "")
     domain = domain.strip("/")
+
     return domain
 
 def normalize_text(value) -> str:
@@ -136,6 +161,40 @@ def normalize_priority(value) -> str:
 
 def normalize_priority_for_match(value) -> str:
     return normalize_priority(value).lower()
+
+def is_allowed_epic_value(value) -> bool:
+    normalized_value = normalize_text(value)
+
+    if not normalized_value:
+        return False
+
+    if normalized_value in ALLOWED_EPIC_NAMES:
+        return True
+
+    for allowed_epic_name in ALLOWED_EPIC_NAMES:
+        if allowed_epic_name in normalized_value:
+            return True
+
+    return False
+
+def filter_allowed_epics(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df.copy()
+
+    filtered_df = df.copy()
+
+    if "EpicName" not in filtered_df.columns:
+        filtered_df["EpicName"] = ""
+
+    if "EpicKey" not in filtered_df.columns:
+        filtered_df["EpicKey"] = ""
+
+    filtered_df = filtered_df[
+        filtered_df["EpicName"].apply(is_allowed_epic_value)
+        | filtered_df["EpicKey"].apply(is_allowed_epic_value)
+    ].copy()
+
+    return filtered_df
 
 def filter_task_bug(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty or "IssueType" not in df.columns:
@@ -379,6 +438,21 @@ def extract_status_events(changelog: list[dict]) -> list[dict]:
 
     return events
 
+def is_valid_pickup_transition(event: dict) -> bool:
+    from_status = event.get("FromStatusNormalized", "")
+    to_status = event.get("ToStatusNormalized", "")
+
+    if from_status not in OPENING_STATUSES:
+        return False
+
+    if to_status in PICKUP_STATUSES:
+        return True
+
+    if to_status in CANCELLED_PICKUP_STATUSES:
+        return True
+
+    return False
+
 def find_pickup_event(events: list[dict], created_ts):
     valid_events = [
         event
@@ -387,9 +461,7 @@ def find_pickup_event(events: list[dict], created_ts):
     ]
 
     for event in valid_events:
-        to_status = event.get("ToStatusNormalized", "")
-
-        if to_status in PICKUP_STATUSES:
+        if is_valid_pickup_transition(event):
             return event
 
     return None
@@ -410,6 +482,8 @@ def compute_pickup_time_for_issue(
         "Summary": issue_info.get("Summary", ""),
         "Assegnatario": issue_info.get("Assignee", "") or "Non assegnato",
         "Priorità cliente": get_priority_label(issue_info),
+        "EpicKey": issue_info.get("EpicKey", ""),
+        "EpicName": issue_info.get("EpicName", ""),
         "Data creazione": created_ts,
         "Data presa in carico": pd.NaT,
         "Stato presa in carico": "",
@@ -467,6 +541,8 @@ def build_pickup_time_dataframe(
         "Summary",
         "Assegnatario",
         "Priorità cliente",
+        "EpicKey",
+        "EpicName",
         "Data creazione",
         "Data presa in carico",
         "Stato presa in carico",
@@ -479,7 +555,12 @@ def build_pickup_time_dataframe(
     if issue_df.empty:
         return pd.DataFrame(columns=columns)
 
-    task_bug_df = filter_task_bug(issue_df)
+    scoped_df = filter_allowed_epics(issue_df)
+
+    if scoped_df.empty:
+        return pd.DataFrame(columns=columns)
+
+    task_bug_df = filter_task_bug(scoped_df)
 
     if task_bug_df.empty:
         return pd.DataFrame(columns=columns)
@@ -518,6 +599,8 @@ def build_pickup_time_dataframe(
                 "Summary": issue_info.get("Summary", ""),
                 "Assegnatario": issue_info.get("Assignee", "") or "Non assegnato",
                 "Priorità cliente": get_priority_label(issue_info),
+                "EpicKey": issue_info.get("EpicKey", ""),
+                "EpicName": issue_info.get("EpicName", ""),
                 "Data creazione": parse_jira_timestamp(issue_info.get("Created")),
                 "Data presa in carico": pd.NaT,
                 "Stato presa in carico": "",
@@ -684,7 +767,7 @@ def format_days_value(value):
     if value is None or pd.isna(value):
         return "N/D"
 
-    return f"{round(float(value), 3)} gg"
+    return f"{round(float(value), 3)} gg lav."
 
 def format_datetime_for_display(series: pd.Series) -> pd.Series:
     parsed = pd.to_datetime(
@@ -729,18 +812,31 @@ def render_pickup_time_section(
 
     st.caption(
         "Il tempo di presa in carico viene calcolato dalla **data di creazione** "
-        "del ticket alla prima transizione verso uno stato operativo, ad esempio "
-        "**Analisi**, **In corso**, **In revisione/Test**, **ON HOLD TEMP** "
-        "**BLOCCATO** o **ANNULLATO**. "
+        "del ticket alla prima transizione da uno stato di apertura verso uno "
+        "stato operativo, ad esempio **Analisi**, **In corso**, "
+        "**In revisione/Test**, **ON HOLD TEMP** o **BLOCCATO**. "
+        "Vengono considerate valide anche le transizioni da stato di apertura "
+        "direttamente verso **ANNULLATO**. "
         "Sono conteggiate solo le ore lavorative **09:00–13:00** e "
-        "**14:00–18:00**, dal lunedì al venerdì."
+        "**14:00–18:00**, dal lunedì al venerdì. "
+        "Il calcolo considera esclusivamente ticket appartenenti alle Epic "
+        "**AM** e **Gestione Memoria**."
     )
 
     if issue_df.empty:
         st.info("Nessuna issue disponibile per i filtri selezionati.")
         return
 
-    task_bug_df = filter_task_bug(issue_df)
+    scoped_df = filter_allowed_epics(issue_df)
+
+    if scoped_df.empty:
+        st.info(
+            "Nessun ticket disponibile nelle Epic abilitate: "
+            "**AM** e **Gestione Memoria**."
+        )
+        return
+
+    task_bug_df = filter_task_bug(scoped_df)
 
     if task_bug_df.empty:
         st.info("Nessun Task o Bug disponibile per i filtri selezionati.")
@@ -796,10 +892,6 @@ def render_pickup_time_section(
         st.info("Nessun tempo di presa in carico disponibile.")
         return
 
-    calculated_df = pickup_df[
-        pickup_df["Esito"].isin(CALCULATED_ESITI)
-    ].copy()
-
     summary_df = build_priority_pickup_summary(pickup_df)
 
     st.divider()
@@ -838,7 +930,8 @@ def render_pickup_time_section(
     st.caption(
         "Le card mostrano il **tempo medio di presa in carico** per priorità "
         "cliente, considerando solo i ticket per cui è stata trovata una "
-        "transizione verso uno stato operativo."
+        "transizione valida da stato di apertura verso uno stato operativo "
+        "oppure verso annullamento."
     )
 
     st.divider()
@@ -897,6 +990,8 @@ def render_pickup_time_section(
         "Summary",
         "Assegnatario",
         "Priorità cliente",
+        "EpicKey",
+        "EpicName",
         "Data creazione",
         "Data presa in carico",
         "Stato presa in carico",
