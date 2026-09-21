@@ -684,7 +684,7 @@ def format_days_value(value):
     if value is None or pd.isna(value):
         return "N/D"
 
-    return f"{round(float(value), 3)} gg lav."
+    return f"{round(float(value), 3)} gg"
 
 def format_datetime_for_display(series: pd.Series) -> pd.Series:
     parsed = pd.to_datetime(
@@ -731,7 +731,7 @@ def render_pickup_time_section(
         "Il tempo di presa in carico viene calcolato dalla **data di creazione** "
         "del ticket alla prima transizione verso uno stato operativo, ad esempio "
         "**Analisi**, **In corso**, **In revisione/Test**, **ON HOLD TEMP** "
-        "o **BLOCCATO**. "
+        "**BLOCCATO** o **ANNULLATO**. "
         "Sono conteggiate solo le ore lavorative **09:00–13:00** e "
         "**14:00–18:00**, dal lunedì al venerdì."
     )
