@@ -16,8 +16,10 @@ from ui_components import (
     render_priority_panel,
     render_priority_monthly_panel,
     render_estimate_compliance_panel,
+    render_closed_monthly_panel,
 )
 from pickup_time import render_pickup_time_section
+from resolution_count import render_resolution_count_section
 from resolution_time import render_resolution_time_section
 
 # ======================
@@ -562,6 +564,7 @@ st.divider()
     tab_priority_trend,
     tab_estimates,
     tab_pickup_time,
+    tab_resolution_count,
     tab_resolution_time,
 ) = st.tabs(
     [
@@ -570,6 +573,7 @@ st.divider()
         "Andamento priorità",
         "Rispetto stime",
         "Presa in carico",
+        "Numero risoluzione",
         "Tempi risoluzione",
     ]
 )
@@ -587,6 +591,10 @@ with tab_overview:
     with col2:
         render_priority_panel(df_view, key_suffix="overview")
 
+    st.divider()
+
+    render_closed_monthly_panel(df_view, key_suffix="overview")
+
 with tab_people:
     render_assignee_panel(df_view, key_suffix="people")
 
@@ -603,6 +611,9 @@ with tab_pickup_time:
         jira_email=jira_email,
         jira_api_token=jira_api_token,
     )
+
+with tab_resolution_count:
+    render_resolution_count_section(df_view)
 
 with tab_resolution_time:
     render_resolution_time_section(
