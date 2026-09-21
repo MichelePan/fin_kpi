@@ -1286,7 +1286,7 @@ def render_resolution_time_section(
     with t1:
         render_metric_card(
             label="Tempo medio risoluzione",
-            value=f"{average_days} giorni lav.",
+            value=f"{average_days} giorni",
             color="#2563EB",
             background="#EFF6FF",
         )
@@ -1320,7 +1320,7 @@ def render_resolution_time_section(
     with t5:
         render_metric_card(
             label="Mediana risoluzione",
-            value=f"{median_days} giorni lav.",
+            value=f"{median_days} giorni",
             color="#2563EB",
             background="#EFF6FF",
         )
@@ -1334,7 +1334,7 @@ def render_resolution_time_section(
     with t7:
         render_metric_card(
             label="Tempo massimo netto",
-            value=f"{max_days} giorni lav.",
+            value=f"{max_days} giorni",
             color="#B54708",
             background="#FFFAEB",
         )
@@ -1342,7 +1342,7 @@ def render_resolution_time_section(
     with t8:
         render_metric_card(
             label="Tempo escluso medio",
-            value=f"{excluded_average_days} giorni lav.",
+            value=f"{excluded_average_days} giorni",
             color="#B54708",
             background="#FFFAEB",
         )
